@@ -43,12 +43,8 @@ function Get-ReleaseAssetRelativePaths {
 function Get-SignedReleaseAssetRelativePaths {
     return @(
         "bin\syncpss-linux-x86_64",
-        "bin\manifest.xml",
-        "bin\install",
         "bin\syncpss-wsl-installer.exe",
         "bin\installer.sh",
-        "bin\uninstall_syncpss.sh",
-        "bin\master_fingerprint.sha256",
         ("bin\" + $ReleaseBundlePath)
     )
 }
@@ -251,6 +247,19 @@ function Write-ReleaseBundle {
         if (Test-Path -LiteralPath $stagingRoot) {
             Remove-Item -LiteralPath $stagingRoot -Recurse -Force
         }
+    }
+}
+
+function Remove-StaleReleaseSignatureFiles {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $binDir = Join-Path $RepoRoot "bin"
+    if (-not (Test-Path -LiteralPath $binDir)) {
+        return
+    }
+
+    Get-ChildItem -LiteralPath $binDir -Filter "*.asc" -File -ErrorAction SilentlyContinue | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force
     }
 }
 
@@ -1304,9 +1313,12 @@ function Invoke-Release {
 
     $signingInfo = Assert-GpgSigningReady
     Write-Host ("Using Windows GPG signing key {0}" -f $signingInfo.Fingerprint) -ForegroundColor Cyan
+    Remove-StaleReleaseSignatureFiles -RepoRoot $repoRoot
     $signedAssets = Get-SignedReleaseAssetRelativePaths | ForEach-Object { Join-Path $repoRoot $_ }
     Write-DetachedReleaseSignatures -SigningInfo $signingInfo -Assets $signedAssets
     $releaseAssets = @($requiredAssets + ($signedAssets | ForEach-Object { "$_.asc" }))
+    Write-Host "Release assets staged for upload:" -ForegroundColor Cyan
+    $releaseAssets | ForEach-Object { Write-Host ("  - {0}" -f (Split-Path -Path $_ -Leaf)) }
 
     $pushResult = Invoke-ReleaseBranchPush -Branch $branch -ReleaseVersion $requestedVersion
     if ($pushResult.OpenedPullRequest) {

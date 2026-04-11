@@ -4,7 +4,7 @@
     <name>Release v1.0.0</name>
     <tag>v1.0.0</tag>
     <version>1.0.0</version>
-    <updated_at>2026-04-11T07:17:14.9826123Z</updated_at>
+    <updated_at>2026-04-11T07:29:45.5534106Z</updated_at>
   </release>
   <repository>
     <owner>KffeePt</owner>
@@ -27,12 +27,8 @@
     <asset name="master_fingerprint.sha256" />
     <asset name="syncpss-release-binaries.zip" />
     <asset name="syncpss-linux-x86_64.asc" />
-    <asset name="manifest.xml.asc" />
-    <asset name="install.asc" />
     <asset name="syncpss-wsl-installer.exe.asc" />
     <asset name="installer.sh.asc" />
-    <asset name="uninstall_syncpss.sh.asc" />
-    <asset name="master_fingerprint.sha256.asc" />
     <asset name="syncpss-release-binaries.zip.asc" />
   </assets>
 </syncpss-manifest>

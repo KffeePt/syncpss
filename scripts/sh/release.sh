@@ -33,12 +33,8 @@ EOF
 signed_release_asset_paths() {
     cat <<'EOF'
 bin/syncpss-linux-x86_64
-bin/manifest.xml
-bin/install
 bin/syncpss-wsl-installer.exe
 bin/installer.sh
-bin/uninstall_syncpss.sh
-bin/master_fingerprint.sha256
 bin/syncpss-release-binaries.zip
 EOF
 }
@@ -444,6 +440,10 @@ write_release_bundle() {
     trap - RETURN
 }
 
+remove_stale_release_signatures() {
+    find bin -maxdepth 1 -type f -name '*.asc' -delete 2>/dev/null || true
+}
+
 assert_gpg_signing_ready() {
     command -v gpg >/dev/null 2>&1 || { echo "gpg is required for signed tags and detached release signatures."; exit 1; }
 
@@ -642,11 +642,17 @@ for asset in "${required_assets[@]}"; do
 done
 
 assert_gpg_signing_ready
+remove_stale_release_signatures
 mapfile -t signed_assets < <(signed_release_asset_paths)
 write_detached_release_signatures "${signed_assets[@]}"
 release_assets=("${required_assets[@]}")
 for asset in "${signed_assets[@]}"; do
     release_assets+=("${asset}.asc")
+done
+
+echo "Release assets staged for upload:"
+for asset in "${release_assets[@]}"; do
+    echo "  - $(basename "$asset")"
 done
 
 echo "Pushing branch ${BRANCH}, then tagging ${TAG} and creating the GitHub release..."

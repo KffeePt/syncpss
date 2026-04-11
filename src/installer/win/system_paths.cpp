@@ -37,13 +37,13 @@ void ensure_wsl_available() {
         );
     }
 
-    if (!host_command_available(L"wsl.exe")) {
-        throw std::runtime_error(
-            "WSL features were enabled, but wsl.exe is still not available yet. A Windows reboot may be required before syncpss can continue."
-        );
-    }
-
     log_line("Windows WSL features were enabled successfully.", kGreen);
+    prompt_press_enter(
+        L"\nWindows now needs a restart before syncpss can continue with WSL distro setup.\n"
+        L"Restart Windows, then run syncpss-wsl-installer.exe again.\n\n"
+        L"Press Enter to close this installer..."
+    );
+    std::exit(0);
 }
 }  // namespace
 
