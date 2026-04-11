@@ -4,7 +4,7 @@ int wmain() {
     try {
         const InstallerOptions options = parse_options();
         print_header();
-        relaunch_as_admin_if_needed();
+        log_line("Detecting WSL distros and local Linux users...", kYellow);
         ensure_host_prerequisites();
 
         const std::vector<std::wstring> distros = ensure_distros_ready(options);

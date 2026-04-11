@@ -32,6 +32,7 @@ inline constexpr wchar_t kMasterFingerprint[] = L"master_fingerprint.sha256";
 inline constexpr wchar_t kShortcutName[] = L"syncpss.lnk";
 inline constexpr wchar_t kWindowsAppDirName[] = L"syncpss";
 inline constexpr wchar_t kWindowsRuntimeDirName[] = L".syncpss";
+inline constexpr wchar_t kWslInstallerWindowScript[] = L"run_installer_window.sh";
 inline constexpr wchar_t kIconPngName[] = L"syncpss-icon.png";
 inline constexpr wchar_t kIconIcoName[] = L"syncpss-icon.ico";
 inline constexpr wchar_t kIconSvgName[] = L"syncpss-icon.svg";
@@ -95,7 +96,6 @@ std::filesystem::path local_syncpss_app_dir();
 std::filesystem::path windows_runtime_dir();
 std::filesystem::path start_menu_programs_dir();
 std::wstring ps_single_quote(const std::wstring& value);
-void relaunch_as_admin_if_needed();
 
 InstallerOptions parse_options();
 std::vector<std::wstring> list_distros();

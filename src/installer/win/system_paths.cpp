@@ -8,6 +8,30 @@ bool host_command_available(const std::wstring& command) {
 
 namespace {
 
+int run_elevated_process_and_wait(const std::wstring& file, const std::wstring& parameters) {
+    SHELLEXECUTEINFOW exec_info{};
+    exec_info.cbSize = sizeof(exec_info);
+    exec_info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    exec_info.lpVerb = L"runas";
+    exec_info.lpFile = file.c_str();
+    exec_info.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+    exec_info.nShow = SW_NORMAL;
+
+    if (ShellExecuteExW(&exec_info) == FALSE) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_CANCELLED) {
+            throw std::runtime_error("Administrator access was cancelled by the user.");
+        }
+        throw std::runtime_error("Failed to elevate WSL setup step: " + last_error_message(error));
+    }
+
+    WaitForSingleObject(exec_info.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(exec_info.hProcess, &exit_code);
+    CloseHandle(exec_info.hProcess);
+    return static_cast<int>(exit_code);
+}
+
 void ensure_wsl_available() {
     if (host_command_available(L"wsl.exe")) {
         return;
@@ -22,15 +46,10 @@ void ensure_wsl_available() {
     }
 
     log_line("Enabling Windows Subsystem for Linux and Virtual Machine Platform with PowerShell...", kYellow);
-    const int exit_code = run_process_interactive({
-        L"powershell.exe",
-        L"-NoLogo",
-        L"-NoProfile",
-        L"-ExecutionPolicy",
-        L"Bypass",
-        L"-Command",
-        L"Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux,VirtualMachinePlatform -All -NoRestart"
-    });
+    const std::wstring elevated_parameters =
+        L"-NoLogo -NoProfile -ExecutionPolicy Bypass -Command "
+        L"\"Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux,VirtualMachinePlatform -All -NoRestart\"";
+    const int exit_code = run_elevated_process_and_wait(L"powershell.exe", elevated_parameters);
     if (exit_code != 0) {
         throw std::runtime_error(
             "PowerShell could not enable the required WSL Windows features automatically."
@@ -126,40 +145,4 @@ std::wstring ps_single_quote(const std::wstring& value) {
         }
     }
     return escaped;
-}
-
-void relaunch_as_admin_if_needed() {
-    if (is_running_as_admin()) {
-        return;
-    }
-
-    log_line("Administrator access is required. Requesting elevation...", kYellow);
-    SHELLEXECUTEINFOW exec_info{};
-    exec_info.cbSize = sizeof(exec_info);
-    exec_info.lpVerb = L"runas";
-    const std::wstring exe_path = current_exe_path();
-    exec_info.lpFile = exe_path.c_str();
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    std::wstring parameters;
-    if (argv != nullptr) {
-        for (int index = 1; index < argc; ++index) {
-            if (!parameters.empty()) {
-                parameters += L' ';
-            }
-            parameters += quote_arg(argv[index]);
-        }
-        LocalFree(argv);
-    }
-    exec_info.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
-    exec_info.nShow = SW_NORMAL;
-
-    if (ShellExecuteExW(&exec_info) == FALSE) {
-        const DWORD error = GetLastError();
-        if (error == ERROR_CANCELLED) {
-            throw std::runtime_error("Administrator access was cancelled by the user");
-        }
-        throw std::runtime_error("Failed to elevate installer: " + last_error_message(error));
-    }
-    std::exit(0);
 }

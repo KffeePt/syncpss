@@ -125,6 +125,7 @@ std::wstring select_distro_tui(const std::vector<std::wstring>& distros) {
             std::wcout << (static_cast<int>(i) == selected ? L"  > " : L"    ") << distros[i] << L"\n";
         }
         std::wcout << L"\nUse Up/Down or j/k, then press Enter.\n";
+        std::wcout.flush();
 
         const int ch = _getch();
         if (ch == 224 || ch == 0) {
@@ -174,6 +175,7 @@ std::wstring select_online_distro_tui(const std::vector<std::wstring>& distros) 
             std::wcout << (static_cast<int>(i) == selected ? L"  > " : L"    ") << items[i] << L"\n";
         }
         std::wcout << L"\nUse Up/Down or j/k, then press Enter.\n";
+        std::wcout.flush();
 
         const int ch = _getch();
         if (ch == 224 || ch == 0) {
@@ -234,6 +236,7 @@ void guide_store_distro_install() {
         std::wcout << L"  [c] Continue after installing and configuring your distro\n";
         std::wcout << L"  [q] Cancel installer\n\n";
         std::wcout << L"Choose an option: ";
+        std::wcout.flush();
 
         const int ch = _getch();
         switch (std::towlower(ch)) {
@@ -398,6 +401,7 @@ std::optional<UserEntry> select_user_tui(const std::vector<UserEntry>& users) {
                        << users[i].username << L" (" << users[i].home_path.wstring() << L")\n";
         }
         std::wcout << L"\nUse Up/Down or j/k, then press Enter.\n";
+        std::wcout.flush();
 
         const int ch = _getch();
         if (ch == 224 || ch == 0) {

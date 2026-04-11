@@ -52,6 +52,7 @@ void print_header() {
 bool prompt_yes_no(const std::wstring& message, bool default_yes) {
     const std::wstring suffix = default_yes ? L" [Y/n]: " : L" [y/N]: ";
     std::wcout << message << suffix;
+    std::wcout.flush();
     std::wstring answer;
     std::getline(std::wcin >> std::ws, answer);
     if (answer.empty()) {
@@ -64,6 +65,7 @@ bool prompt_yes_no(const std::wstring& message, bool default_yes) {
 
 void prompt_press_enter(const std::wstring& message) {
     std::wcout << message;
+    std::wcout.flush();
     std::wstring ignored;
     std::getline(std::wcin >> std::ws, ignored);
 }

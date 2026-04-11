@@ -12,7 +12,6 @@ GLOBAL_BIN_DIR="/usr/local/bin"
 GLOBAL_CONFIG_DIR="/etc/syncpass"
 INSTALL_NOTE="${HOME_DIR}/syncpss-install-note.txt"
 SELF_PATH="${0}"
-WINDOWS_SHORTCUT_PURGE_MARKER="${HOME_DIR}/.syncpss-purge-windows-shortcut"
 REAL_USER="${SUDO_USER:-$(id -un)}"
 REAL_GROUP="$(id -gn "${REAL_USER}" 2>/dev/null || id -gn)"
 
@@ -190,6 +189,74 @@ remove_home_dir_if_safe() {
     rm -rf "${path}"
 }
 
+remove_windows_path_if_safe() {
+    local path="$1"
+    case "${path}" in
+        /mnt/*/Users/*)
+            [ "${#path}" -gt 14 ] || fail "Refusing to delete unsafe Windows-mounted path: ${path}"
+            ;;
+        *)
+            fail "Refusing to delete unmanaged Windows path: ${path}"
+            ;;
+    esac
+
+    if [ -e "${path}" ] || [ -L "${path}" ]; then
+        rm -rf "${path}"
+    fi
+}
+
+windows_env_path() {
+    local variable="$1"
+    local raw=""
+
+    command -v cmd.exe >/dev/null 2>&1 || return 1
+    command -v wslpath >/dev/null 2>&1 || return 1
+
+    raw="$(cmd.exe /c "echo %${variable}%" 2>/dev/null | tr -d '\r')"
+    [ -n "${raw}" ] || return 1
+    [ "${raw}" != "%${variable}%" ] || return 1
+
+    wslpath -u "${raw}"
+}
+
+purge_windows_shortcut_assets() {
+    local windows_appdata windows_localappdata windows_userprofile
+    local shortcut_path runtime_dir app_dir
+
+    windows_appdata="$(windows_env_path APPDATA || true)"
+    windows_localappdata="$(windows_env_path LOCALAPPDATA || true)"
+    windows_userprofile="$(windows_env_path USERPROFILE || true)"
+
+    if [ -z "${windows_appdata}" ] && [ -z "${windows_localappdata}" ] && [ -z "${windows_userprofile}" ]; then
+        warn "Could not resolve Windows profile paths from WSL. Skipping Start Menu cleanup."
+        return
+    fi
+
+    if [ -n "${windows_appdata}" ]; then
+        shortcut_path="${windows_appdata}/Microsoft/Windows/Start Menu/Programs/syncpss.lnk"
+        if [ -e "${shortcut_path}" ] || [ -L "${shortcut_path}" ]; then
+            log "Removing Windows Start Menu shortcut..."
+            remove_windows_path_if_safe "${shortcut_path}"
+        fi
+    fi
+
+    if [ -n "${windows_userprofile}" ]; then
+        runtime_dir="${windows_userprofile}/.syncpss"
+        if [ -e "${runtime_dir}" ]; then
+            log "Removing Windows syncpss runtime helper directory..."
+            remove_windows_path_if_safe "${runtime_dir}"
+        fi
+    fi
+
+    if [ -n "${windows_localappdata}" ]; then
+        app_dir="${windows_localappdata}/syncpss"
+        if [ -e "${app_dir}" ]; then
+            log "Removing Windows syncpss local app assets..."
+            remove_windows_path_if_safe "${app_dir}"
+        fi
+    fi
+}
+
 remove_system_path() {
     local path="$1"
     case "${path}" in
@@ -287,10 +354,6 @@ main() {
         fi
     fi
 
-    if [ "${PURGE_WINDOWS_SHORTCUT}" = "1" ]; then
-        : > "${WINDOWS_SHORTCUT_PURGE_MARKER}"
-    fi
-
     if ! has_purgeable_targets; then
         log "No persistent syncpss-managed files were found to remove."
     fi
@@ -325,6 +388,10 @@ main() {
         log "Removing saved private repo-name preference..."
         remove_if_exists "${SETTINGS_FILE}"
         rmdir "${SETTINGS_DIR}" >/dev/null 2>&1 || true
+    fi
+
+    if [ "${PURGE_WINDOWS_SHORTCUT}" = "1" ]; then
+        purge_windows_shortcut_assets
     fi
 
     log "Removing uninstall script..."
