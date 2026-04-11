@@ -6,10 +6,6 @@ bool host_command_available(const std::wstring& command) {
     return found > 0 && found < MAX_PATH;
 }
 
-bool host_package_manager_available() {
-    return host_command_available(L"winget.exe");
-}
-
 namespace {
 
 void ensure_wsl_available() {
@@ -49,55 +45,10 @@ void ensure_wsl_available() {
 
     log_line("Windows WSL features were enabled successfully.", kGreen);
 }
-
-void maybe_install_windows_dependency(
-    const std::wstring& command,
-    const std::wstring& display_name,
-    const std::wstring& winget_id
-) {
-    if (host_command_available(command)) {
-        return;
-    }
-
-    std::wstringstream prompt;
-    prompt << L"Windows dependency missing: " << display_name
-           << L". Install it automatically with winget now?";
-    if (!prompt_yes_no(prompt.str(), true)) {
-        throw std::runtime_error(
-            to_utf8(display_name) + " is required before syncpss can continue on Windows."
-        );
-    }
-
-    if (!host_package_manager_available()) {
-        throw std::runtime_error(
-            "winget.exe is not available, so " + to_utf8(display_name) +
-            " must be installed manually before syncpss can continue."
-        );
-    }
-
-    log_line("Installing " + to_utf8(display_name) + " with winget...", kYellow);
-    const int exit_code = run_process_interactive({
-        L"winget.exe",
-        L"install",
-        L"--id",
-        winget_id,
-        L"-e",
-        L"--accept-package-agreements",
-        L"--accept-source-agreements"
-    });
-    if (exit_code != 0 || !host_command_available(command)) {
-        throw std::runtime_error("Failed to install " + to_utf8(display_name) + " automatically.");
-    }
-    log_line("Installed " + to_utf8(display_name) + " successfully.", kGreen);
-}
-
 }  // namespace
 
 void ensure_host_prerequisites() {
     ensure_wsl_available();
-
-    maybe_install_windows_dependency(L"git.exe", L"Git for Windows", L"Git.Git");
-    maybe_install_windows_dependency(L"gh.exe", L"GitHub CLI", L"GitHub.cli");
 }
 
 bool is_running_as_admin() {

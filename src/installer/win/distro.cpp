@@ -197,6 +197,13 @@ std::wstring select_online_distro_tui(const std::vector<std::wstring>& distros) 
 
 namespace {
 
+void open_store_uri(const std::wstring& uri) {
+    HINSTANCE result = ShellExecuteW(nullptr, L"open", uri.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        throw std::runtime_error("Failed to open Microsoft Store from the installer.");
+    }
+}
+
 void enable_wsl_core() {
     if (!prompt_yes_no(
             L"WSL does not look ready on this Windows install. Enable the required Windows features automatically now?",
@@ -213,20 +220,52 @@ void enable_wsl_core() {
     }
 }
 
-void install_wsl_distro(const std::wstring& distro) {
-    std::wstringstream prompt;
-    prompt << L"No WSL distributions are installed. Install " << distro
-           << L" automatically now and let syncpss guide the first Linux user setup?";
-    if (!prompt_yes_no(prompt.str(), true)) {
-        throw std::runtime_error("A WSL Linux distribution is required before syncpss can continue.");
-    }
+void guide_store_distro_install() {
+    while (true) {
+        std::wcout << L"\x1b[2J\x1b[H";
+        print_header();
+        std::wcout << L"No WSL Linux distributions are installed yet.\n\n";
+        std::wcout << L"Install a distro from Microsoft Store first.\n";
+        std::wcout << L"Recommended: Ubuntu or Kali Linux.\n";
+        std::wcout << L"You can also choose any other WSL-compatible distro you prefer.\n\n";
+        std::wcout << L"  [u] Open Microsoft Store search for Ubuntu\n";
+        std::wcout << L"  [k] Open Microsoft Store search for Kali Linux\n";
+        std::wcout << L"  [m] Open Microsoft Store home\n";
+        std::wcout << L"  [c] Continue after installing and configuring your distro\n";
+        std::wcout << L"  [q] Cancel installer\n\n";
+        std::wcout << L"Choose an option: ";
 
-    log_line("Installing WSL distribution " + to_utf8(distro) + "...", kYellow);
-    const int exit_code = run_process_interactive({L"wsl.exe", L"--install", L"-d", distro});
-    if (exit_code != 0) {
-        throw std::runtime_error(
-            "wsl.exe --install did not complete successfully. If Windows requested a reboot, reboot and rerun the installer."
-        );
+        const int ch = _getch();
+        switch (std::towlower(ch)) {
+            case L'u':
+                open_store_uri(L"ms-windows-store://search/?query=Ubuntu");
+                prompt_press_enter(
+                    L"\nInstall Ubuntu, launch it once, finish the Linux username/password setup, then press Enter here to continue..."
+                );
+                return;
+            case L'k':
+                open_store_uri(L"ms-windows-store://search/?query=Kali%20Linux");
+                prompt_press_enter(
+                    L"\nInstall Kali Linux, launch it once, finish the Linux username/password setup, then press Enter here to continue..."
+                );
+                return;
+            case L'm':
+                open_store_uri(L"ms-windows-store://home");
+                prompt_press_enter(
+                    L"\nInstall and launch your preferred Linux distro from Microsoft Store, finish the Linux username/password setup, then press Enter here to continue..."
+                );
+                return;
+            case L'c':
+                prompt_press_enter(
+                    L"\nAfter you install and launch your Linux distro and finish the Linux username/password setup, press Enter here to continue..."
+                );
+                return;
+            case L'q':
+            case 27:
+                throw std::runtime_error("A WSL Linux distribution is required before syncpss can continue.");
+            default:
+                break;
+        }
     }
 }
 
@@ -266,6 +305,7 @@ void wait_for_first_linux_user(const std::wstring& distro) {
 }  // namespace
 
 std::vector<std::wstring> ensure_distros_ready(const InstallerOptions& options) {
+    (void)options;
     std::vector<std::wstring> distros;
     try {
         distros = list_distros();
@@ -283,31 +323,24 @@ std::vector<std::wstring> ensure_distros_ready(const InstallerOptions& options) 
         return distros;
     }
 
-    std::vector<std::wstring> online_distros = list_online_distros();
-    if (online_distros.empty()) {
-        throw std::runtime_error(
-            "No usable WSL Linux distributions were found, and wsl.exe did not return any installable online distros."
-        );
-    }
+    while (true) {
+        guide_store_distro_install();
+        try {
+            distros = list_distros();
+        } catch (const std::exception&) {
+            distros.clear();
+        }
 
-    std::wstring distro_to_install;
-    if (options.distro.has_value()) {
-        distro_to_install = *options.distro;
-    } else {
-        distro_to_install = select_online_distro_tui(online_distros);
-    }
+        if (!distros.empty()) {
+            return distros;
+        }
 
-    install_wsl_distro(distro_to_install);
-    distros = list_distros();
-    if (std::find(distros.begin(), distros.end(), distro_to_install) == distros.end()) {
-        throw std::runtime_error(
-            "The requested WSL distro was not ready after installation. If Windows requested a reboot, reboot and rerun syncpss."
-        );
+        if (!prompt_yes_no(
+                L"syncpss still cannot detect an installed WSL Linux distribution. Open Microsoft Store again and keep waiting?",
+                true)) {
+            throw std::runtime_error("A WSL Linux distribution is required before syncpss can continue.");
+        }
     }
-
-    launch_first_run_setup_window(distro_to_install);
-    wait_for_first_linux_user(distro_to_install);
-    return list_distros();
 }
 
 std::filesystem::path distro_home_root(const std::wstring& distro) {
@@ -336,6 +369,18 @@ std::vector<UserEntry> list_users_in_distro(const std::wstring& distro) {
         return left.username < right.username;
     });
     return users;
+}
+
+void ensure_distro_users_ready(const std::wstring& distro) {
+    try {
+        if (!list_users_in_distro(distro).empty()) {
+            return;
+        }
+    } catch (...) {
+    }
+
+    launch_first_run_setup_window(distro);
+    wait_for_first_linux_user(distro);
 }
 
 std::optional<UserEntry> select_user_tui(const std::vector<UserEntry>& users) {

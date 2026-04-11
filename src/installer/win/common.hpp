@@ -106,6 +106,7 @@ std::wstring select_online_distro_tui(const std::vector<std::wstring>& distros);
 std::vector<std::wstring> ensure_distros_ready(const InstallerOptions& options);
 std::filesystem::path distro_home_root(const std::wstring& distro);
 std::vector<UserEntry> list_users_in_distro(const std::wstring& distro);
+void ensure_distro_users_ready(const std::wstring& distro);
 std::optional<UserEntry> select_user_tui(const std::vector<UserEntry>& users);
 
 std::filesystem::path exe_dir();

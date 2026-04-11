@@ -18,6 +18,7 @@ int wmain() {
                 distro = select_distro_tui(distros);
             }
 
+            ensure_distro_users_ready(distro);
             const std::vector<UserEntry> users = list_users_in_distro(distro);
             selected_user.reset();
             if (options.user.has_value()) {
