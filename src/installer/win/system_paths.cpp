@@ -12,6 +12,44 @@ bool host_package_manager_available() {
 
 namespace {
 
+void ensure_wsl_available() {
+    if (host_command_available(L"wsl.exe")) {
+        return;
+    }
+
+    if (!prompt_yes_no(
+            L"WSL is not available on this Windows install yet. Enable the required Windows features automatically now?",
+            true)) {
+        throw std::runtime_error(
+            "wsl.exe is not available on this Windows install. Enable WSL support in Windows first, then rerun syncpss."
+        );
+    }
+
+    log_line("Enabling Windows Subsystem for Linux and Virtual Machine Platform with PowerShell...", kYellow);
+    const int exit_code = run_process_interactive({
+        L"powershell.exe",
+        L"-NoLogo",
+        L"-NoProfile",
+        L"-ExecutionPolicy",
+        L"Bypass",
+        L"-Command",
+        L"Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux,VirtualMachinePlatform -All -NoRestart"
+    });
+    if (exit_code != 0) {
+        throw std::runtime_error(
+            "PowerShell could not enable the required WSL Windows features automatically."
+        );
+    }
+
+    if (!host_command_available(L"wsl.exe")) {
+        throw std::runtime_error(
+            "WSL features were enabled, but wsl.exe is still not available yet. A Windows reboot may be required before syncpss can continue."
+        );
+    }
+
+    log_line("Windows WSL features were enabled successfully.", kGreen);
+}
+
 void maybe_install_windows_dependency(
     const std::wstring& command,
     const std::wstring& display_name,
@@ -56,11 +94,7 @@ void maybe_install_windows_dependency(
 }  // namespace
 
 void ensure_host_prerequisites() {
-    if (!host_command_available(L"wsl.exe")) {
-        throw std::runtime_error(
-            "wsl.exe is not available on this Windows install. Enable WSL support in Windows first, then rerun syncpss."
-        );
-    }
+    ensure_wsl_available();
 
     maybe_install_windows_dependency(L"git.exe", L"Git for Windows", L"Git.Git");
     maybe_install_windows_dependency(L"gh.exe", L"GitHub CLI", L"GitHub.cli");

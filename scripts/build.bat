@@ -133,7 +133,7 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
     echo.
     echo Building Windows WSL installer...
     g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -municode ^
-      -static-libgcc -static-libstdc++ ^
+      -static -static-libgcc -static-libstdc++ ^
       "%WIN_INSTALLER_DIR%\main.cpp" ^
       "%WIN_INSTALLER_DIR%\console.cpp" ^
       "%WIN_INSTALLER_DIR%\process.cpp" ^
