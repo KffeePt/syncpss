@@ -1,0 +1,9 @@
+[repo]
+url = git@github.com:KffeePt/pass-store.git
+branch = main
+
+[gpg]
+key_id = YOUR_GPG_KEY_ID
+
+[store]
+path = ~/.password-store

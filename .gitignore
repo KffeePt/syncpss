@@ -1,0 +1,12 @@
+build/
+build-wsl/
+build-docker/
+bin/
+out/
+.DS_Store
+*.swp
+*.tmp
+*.log
+.env
+master_fingerprint.sha256
+config/maintainer_id.sha256

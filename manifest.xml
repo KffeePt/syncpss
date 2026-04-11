@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<syncpss-manifest>
+  <release>
+    <name>Release v1.0.0</name>
+    <tag>v1.0.0</tag>
+    <version>1.0.0</version>
+    <updated_at>2026-04-11T06:36:37.4986999Z</updated_at>
+  </release>
+  <repository>
+    <owner>KffeePt</owner>
+    <name>syncpss</name>
+    <id_hash>fbbce4c5554a6b7033546775a6f2178c8cb6963b0b72a76051bbb2b8d48d5a7e</id_hash>
+  </repository>
+  <assets>
+    <asset name="syncpss-linux-x86_64" />
+    <asset name="syncpss-linux-x86_64.sha256" />
+    <asset name="manifest.xml" />
+    <asset name="manifest.xml.sha256" />
+    <asset name="install" />
+    <asset name="install.sha256" />
+    <asset name="syncpss-wsl-installer.exe" />
+    <asset name="syncpss-wsl-installer.exe.sha256" />
+    <asset name="installer.sh" />
+    <asset name="installer.sh.sha256" />
+    <asset name="uninstall_syncpss.sh" />
+    <asset name="uninstall_syncpss.sh.sha256" />
+    <asset name="master_fingerprint.sha256" />
+    <asset name="syncpss-release-binaries.zip" />
+    <asset name="syncpss-linux-x86_64.asc" />
+    <asset name="manifest.xml.asc" />
+    <asset name="install.asc" />
+    <asset name="syncpss-wsl-installer.exe.asc" />
+    <asset name="installer.sh.asc" />
+    <asset name="uninstall_syncpss.sh.asc" />
+    <asset name="master_fingerprint.sha256.asc" />
+    <asset name="syncpss-release-binaries.zip.asc" />
+  </assets>
+</syncpss-manifest>

@@ -1,0 +1,52 @@
+name: PR Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-checks:
+    name: linux-checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libncurses5-dev cmake build-essential nlohmann-json3-dev
+
+      - name: Validate shell scripts
+        run: |
+          bash -n install.sh
+          bash -n scripts/sh/installer.sh
+          bash -n scripts/sh/uninstall_syncpss.sh
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSYNCPSS_ENABLE_CLANG_TIDY=OFF
+
+      - name: Build
+        run: cmake --build build -- -j"$(nproc)"
+
+  windows-installer-check:
+    name: windows-installer-check
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW
+        run: choco install mingw -y
+
+      - name: Build installer
+        shell: cmd
+        run: scripts\build.bat --installer-only --skip-linux-installer --no-pause
