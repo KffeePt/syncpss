@@ -20,7 +20,7 @@ download() {
     local asset_name="$1"
     local destination="$2"
     local release_tag="$3"
-    curl -fsSL --retry 3 --retry-delay 1 \
+    curl -fL --progress-bar --retry 3 --retry-delay 1 \
         "https://github.com/${REPO}/releases/download/${release_tag}/${asset_name}" \
         -o "${destination}"
 }

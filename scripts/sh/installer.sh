@@ -3928,7 +3928,7 @@ json_field_value() {
     local field_name="$2"
     local parser
     parser="$(json_parser_command)" || fail "Need python3 or python to parse installer JSON responses safely."
-    printf '%s' "${json_content}" | "${parser}" - "${field_name}" <<'PY'
+    printf '%s' "${json_content}" | "${parser}" -c '
 import json
 import sys
 
@@ -3951,7 +3951,7 @@ while stack:
         stack.extend(reversed(current))
 
 sys.exit(1)
-PY
+' "${field_name}"
 }
 
 selected_release_api_endpoint() {
@@ -3962,21 +3962,51 @@ selected_release_api_endpoint() {
     printf '%s' "${GITHUB_API_BASE}/releases/latest"
 }
 
+github_api_json() {
+    local endpoint="$1"
+
+    if command_exists curl; then
+        curl -fsSL --retry 3 --retry-delay 1 \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'User-Agent: syncpss' \
+            "${endpoint}" 2>/dev/null
+        return $?
+    fi
+
+    if command_exists gh; then
+        local gh_endpoint="${endpoint#https://api.github.com/}"
+        gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "${gh_endpoint}" 2>/dev/null
+        return $?
+    fi
+
+    return 1
+}
+
 selected_release_json() {
     local attempts=5
     local attempt=1
-    local endpoint json_response release_tag
+    local endpoint fallback_endpoint json_response release_tag
 
     endpoint="$(selected_release_api_endpoint)"
+    fallback_endpoint="${GITHUB_API_BASE}/releases?per_page=10"
 
     while [ "${attempt}" -le "${attempts}" ]; do
-        json_response="$(curl -fsSL --retry 3 --retry-delay 1 \
-            -H 'Accept: application/vnd.github+json' \
-            "${endpoint}" 2>/dev/null || true)"
+        json_response="$(github_api_json "${endpoint}" || true)"
         release_tag="$(json_field_value "${json_response}" "tag_name" || true)"
         if [ -n "${json_response}" ] && [ -n "${release_tag}" ] && syncpss_is_single_line_safe "${release_tag}"; then
             printf '%s' "${json_response}"
             return 0
+        fi
+
+        if [ -z "${SYNCPSS_RELEASE_TAG:-}" ]; then
+            json_response="$(github_api_json "${fallback_endpoint}" || true)"
+            release_tag="$(json_field_value "${json_response}" "tag_name" || true)"
+            if [ -n "${json_response}" ] && [ -n "${release_tag}" ] && syncpss_is_single_line_safe "${release_tag}"; then
+                printf '%s' "${json_response}"
+                return 0
+            fi
         fi
 
         if [ "${attempt}" -lt "${attempts}" ]; then
@@ -4028,9 +4058,42 @@ download_release_asset() {
     local release_tag="$1"
     local asset_name="$2"
     local destination="$3"
-    curl -fsSL --retry 3 --retry-delay 1 \
-        "$(release_asset_url "${release_tag}" "${asset_name}")" \
-        -o "${destination}"
+    local url
+    url="$(release_asset_url "${release_tag}" "${asset_name}")"
+
+    if command_exists curl; then
+        curl -fL --progress-bar --retry 3 --retry-delay 1 \
+            -H 'User-Agent: syncpss' \
+            "${url}" \
+            -o "${destination}"
+        return $?
+    fi
+
+    if command_exists gh; then
+        (
+            cd "$(dirname "${destination}")" && \
+            gh release download "${release_tag}" -R "${REPO_OWNER}/${REPO_NAME}" -p "${asset_name}"
+        )
+        return $?
+    fi
+
+    return 1
+}
+
+copy_staged_release_support_asset() {
+    local asset_name="$1"
+    local destination="$2"
+    [ -f "${SCRIPT_DIR}/${asset_name}" ] || return 1
+    cp -f "${SCRIPT_DIR}/${asset_name}" "${destination}"
+}
+
+download_or_copy_support_asset() {
+    local release_tag="$1"
+    local asset_name="$2"
+    local destination="$3"
+
+    download_release_asset "${release_tag}" "${asset_name}" "${destination}" && return 0
+    copy_staged_release_support_asset "${asset_name}" "${destination}"
 }
 
 xml_field_value() {
@@ -4092,8 +4155,8 @@ download_release_assets_from_github() {
             download_release_asset "${release_tag}" "${SYNCPS_SHA_ASSET}" "${TMP_DIR}/${SYNCPS_SHA_ASSET}" && \
             download_release_asset "${release_tag}" "${MANIFEST_ASSET}" "${TMP_DIR}/${MANIFEST_ASSET}" && \
             download_release_asset "${release_tag}" "${MANIFEST_SHA_ASSET}" "${TMP_DIR}/${MANIFEST_SHA_ASSET}" && \
-            download_release_asset "${release_tag}" "${MANAGED_PATHS_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_ASSET}" && \
-            download_release_asset "${release_tag}" "${MANAGED_PATHS_SHA_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_SHA_ASSET}" && \
+            download_or_copy_support_asset "${release_tag}" "${MANAGED_PATHS_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_ASSET}" && \
+            download_or_copy_support_asset "${release_tag}" "${MANAGED_PATHS_SHA_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_SHA_ASSET}" && \
             download_release_asset "${release_tag}" "${UNINSTALL_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}" && \
             download_release_asset "${release_tag}" "${UNINSTALL_SHA_ASSET}" "${TMP_DIR}/${UNINSTALL_SHA_ASSET}" && \
             download_release_asset "${release_tag}" "${MASTER_FINGERPRINT_ASSET}" "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}"; then

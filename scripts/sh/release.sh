@@ -23,6 +23,8 @@ bin/syncpss-wsl-installer.exe
 bin/syncpss-wsl-installer.exe.sha256
 bin/installer.sh
 bin/installer.sh.sha256
+bin/managed_paths.sh
+bin/managed_paths.sh.sha256
 bin/uninstall_syncpss.sh
 bin/uninstall_syncpss.sh.sha256
 bin/master_fingerprint.sha256
@@ -35,6 +37,7 @@ signed_release_asset_paths() {
 bin/syncpss-linux-x86_64
 bin/syncpss-wsl-installer.exe
 bin/installer.sh
+bin/managed_paths.sh
 bin/syncpss-release-binaries.zip
 EOF
 }
@@ -393,6 +396,7 @@ release_master_fingerprint() {
       "bin/syncpss-linux-x86_64" \
       "bin/install" \
       "bin/installer.sh" \
+      "bin/managed_paths.sh" \
       "bin/uninstall_syncpss.sh" > "${temp_payload}"
     sha256sum "${temp_payload}" | awk '{print $1}'
     rm -f "${temp_payload}"
@@ -413,6 +417,7 @@ write_release_bundle() {
       "bin/install"
       "bin/syncpss-wsl-installer.exe"
       "bin/installer.sh"
+      "bin/managed_paths.sh"
       "bin/uninstall_syncpss.sh"
     )
 

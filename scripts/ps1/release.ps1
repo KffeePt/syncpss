@@ -33,6 +33,8 @@ function Get-ReleaseAssetRelativePaths {
         "bin\syncpss-wsl-installer.exe.sha256",
         "bin\installer.sh",
         "bin\installer.sh.sha256",
+        "bin\managed_paths.sh",
+        "bin\managed_paths.sh.sha256",
         "bin\uninstall_syncpss.sh",
         "bin\uninstall_syncpss.sh.sha256",
         "bin\master_fingerprint.sha256",
@@ -45,6 +47,7 @@ function Get-SignedReleaseAssetRelativePaths {
         "bin\syncpss-linux-x86_64",
         "bin\syncpss-wsl-installer.exe",
         "bin\installer.sh",
+        "bin\managed_paths.sh",
         ("bin\" + $ReleaseBundlePath)
     )
 }
@@ -173,6 +176,7 @@ function Get-ReleaseMasterFingerprint {
         "bin\syncpss-linux-x86_64",
         "bin\install",
         "bin\installer.sh",
+        "bin\managed_paths.sh",
         "bin\uninstall_syncpss.sh"
     ) | ForEach-Object { Join-Path $RepoRoot $_ }
 
@@ -220,6 +224,7 @@ function Write-ReleaseBundle {
         "bin\install",
         "bin\syncpss-wsl-installer.exe",
         "bin\installer.sh",
+        "bin\managed_paths.sh",
         "bin\uninstall_syncpss.sh"
     )
 

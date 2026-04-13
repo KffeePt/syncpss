@@ -65,7 +65,8 @@ std::string install_mode_note(const InstallSource install_source) {
         return "Local development mode was selected. Windows-staged bin assets were copied into ~/.syncpss/helpers\n"
                "so installer.sh --local can install the currently built or modified version.\n";
     }
-    return "Release mode was selected. installer.sh will use the official GitHub release channel by default.\n";
+    return "Release mode was selected. Release binaries from GitHub were downloaded to ~/.syncpss/helpers\n"
+           "so installer.sh --local can install the verified release channel version.\n";
 }
 
 }  // namespace

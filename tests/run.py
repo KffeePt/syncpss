@@ -189,6 +189,16 @@ def check_repo_structure() -> str:
         "installer asset staging must validate managed_paths.sh alongside the install payload",
     )
     ensure_text_contains(
+        REPO_ROOT / "scripts" / "sh" / "installer.sh",
+        "releases?per_page=10",
+        "installer release discovery must fall back to the releases list when latest is unavailable",
+    )
+    ensure_text_contains(
+        REPO_ROOT / "scripts" / "sh" / "installer.sh",
+        "download_or_copy_support_asset",
+        "installer release downloads must fall back to staged helper support assets when GitHub omits them",
+    )
+    ensure_text_contains(
         REPO_ROOT / "src" / "installer" / "linux" / "main_installer.cpp",
         "kManagedPathsScriptAsset",
         "native installer fingerprint verification must include managed_paths.sh",
@@ -207,6 +217,16 @@ def check_repo_structure() -> str:
         REPO_ROOT / "src" / "installer" / "win" / "main.cpp",
         "Press Enter to Run WSL Installer...",
         "interactive Windows installer must pause before launching installer.sh",
+    )
+    ensure_text_contains(
+        REPO_ROOT / "src" / "installer" / "win" / "assets.cpp",
+        "releases?per_page=10",
+        "Windows release downloader must fall back to the releases list when latest is unavailable",
+    )
+    ensure_text_contains(
+        REPO_ROOT / "src" / "installer" / "win" / "assets.cpp",
+        "Invoke-WebRequest",
+        "Windows release downloader must fetch release assets through PowerShell with an explicit release tag",
     )
     ensure_text_contains(
         REPO_ROOT / "src" / "installer" / "win" / "shortcuts.cpp",

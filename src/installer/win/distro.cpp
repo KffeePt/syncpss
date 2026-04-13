@@ -34,7 +34,12 @@ InstallerOptions parse_options() {
             continue;
         }
         if (arg == L"--local") {
-            options.install_source = InstallSource::local;
+            const std::filesystem::path dev_root = exe_dir().parent_path();
+            if (std::filesystem::exists(dev_root / L"CMakeLists.txt") && std::filesystem::exists(dev_root / L"scripts")) {
+                options.install_source = InstallSource::local;
+            } else {
+                throw std::runtime_error("The --local flag is only allowed when running from the syncpss development repository.");
+            }
             continue;
         }
         if (arg == L"--release" || arg == L"--github") {

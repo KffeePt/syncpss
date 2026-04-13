@@ -2,6 +2,78 @@
 
 namespace {
 
+std::optional<std::wstring> configured_release_tag() {
+    wchar_t* value = nullptr;
+    std::size_t size = 0;
+    if (_wdupenv_s(&value, &size, L"SYNCPSS_RELEASE_TAG") != 0 || value == nullptr || size == 0) {
+        free(value);
+        return std::nullopt;
+    }
+
+    const std::wstring tag = trim(value);
+    free(value);
+    if (tag.empty() || contains_control_chars(tag)) {
+        return std::nullopt;
+    }
+    return tag;
+}
+
+std::wstring release_api_base() {
+    return L"https://api.github.com/repos/" + std::wstring(kRepoOwner) + L"/" + std::wstring(kRepoName);
+}
+
+ProcessResult run_powershell_capture(const std::wstring& command) {
+    return run_process({
+        L"powershell.exe",
+        L"-NoLogo",
+        L"-NoProfile",
+        L"-ExecutionPolicy",
+        L"Bypass",
+        L"-Command",
+        command
+    });
+}
+
+std::optional<std::wstring> resolved_release_tag() {
+    static bool initialized = false;
+    static std::optional<std::wstring> cached_tag;
+    if (initialized) {
+        return cached_tag;
+    }
+    initialized = true;
+
+    cached_tag = configured_release_tag();
+    if (cached_tag.has_value()) {
+        return cached_tag;
+    }
+
+    const std::wstring command =
+        L"$headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'syncpss' }; "
+        L"$repo = '" + ps_single_quote(release_api_base()) + L"'; "
+        L"try { "
+        L"  $release = Invoke-RestMethod -Headers $headers -Uri ($repo + '/releases/latest') -ErrorAction Stop; "
+        L"  if ($release.tag_name) { Write-Output $release.tag_name; exit 0 } "
+        L"} catch { } "
+        L"try { "
+        L"  $releases = Invoke-RestMethod -Headers $headers -Uri ($repo + '/releases?per_page=10') -ErrorAction Stop; "
+        L"  $tag = $releases | Where-Object { $_.tag_name } | Select-Object -ExpandProperty tag_name -First 1; "
+        L"  if ($tag) { Write-Output $tag; exit 0 } "
+        L"} catch { } "
+        L"exit 1";
+
+    const ProcessResult result = run_powershell_capture(command);
+    if (result.exit_code != 0) {
+        return std::nullopt;
+    }
+
+    const std::wstring tag = trim(to_wide(trim_ascii(result.output)));
+    if (tag.empty() || contains_control_chars(tag)) {
+        return std::nullopt;
+    }
+    cached_tag = tag;
+    return cached_tag;
+}
+
 std::filesystem::path require_asset_path(const std::filesystem::path& base_dir, const wchar_t* asset_name) {
     const std::filesystem::path asset_path = base_dir / asset_name;
     if (!std::filesystem::exists(asset_path)) {
@@ -119,9 +191,9 @@ void copy_text_file_with_lf(const std::filesystem::path& source, const std::file
     }
 }
 
-std::wstring release_asset_url(const std::wstring& asset_name) {
+std::wstring release_asset_url(const std::wstring& release_tag, const std::wstring& asset_name) {
     return L"https://github.com/" + std::wstring(kRepoOwner) + L"/" + std::wstring(kRepoName) +
-           L"/releases/latest/download/" + asset_name;
+           L"/releases/download/" + release_tag + L"/" + asset_name;
 }
 
 std::string normalize_sha256(const std::string& input) {
@@ -192,12 +264,26 @@ void verify_release_asset_checksum(const std::filesystem::path& asset_path, cons
 }
 
 std::filesystem::path download_release_asset(const std::wstring& asset_name) {
+    log_line("Downloading " + to_utf8(asset_name) + "...", kCyan);
     const auto temp_root = process_temp_dir();
     const auto destination = temp_root / std::filesystem::path(asset_name);
-    const std::wstring url = release_asset_url(asset_name);
-    const HRESULT hr = URLDownloadToFileW(nullptr, url.c_str(), destination.wstring().c_str(), 0, nullptr);
-    if (FAILED(hr)) {
-        throw std::runtime_error("Failed to download release asset: " + to_utf8(asset_name));
+    const std::optional<std::wstring> release_tag = resolved_release_tag();
+    if (!release_tag.has_value()) {
+        throw std::runtime_error("Failed to resolve the current GitHub release tag.");
+    }
+
+    const std::wstring url = release_asset_url(*release_tag, asset_name);
+    const std::wstring command =
+        L"$headers = @{ Accept = 'application/octet-stream'; 'User-Agent' = 'syncpss' }; "
+        L"Invoke-WebRequest -Headers $headers -Uri '" + ps_single_quote(url) +
+        L"' -OutFile '" + ps_single_quote(destination.wstring()) + L"' -ErrorAction Stop";
+    const ProcessResult result = run_powershell_capture(command);
+    if (result.exit_code != 0 || !std::filesystem::exists(destination)) {
+        throw std::runtime_error(
+            "Failed to download release asset: " + to_utf8(asset_name) +
+            " from " + to_utf8(url) +
+            (result.output.empty() ? "" : " (" + trim_ascii(result.output) + ")")
+        );
     }
     return destination;
 }
@@ -220,13 +306,8 @@ std::string install_source_name(const InstallSource install_source) {
 }
 
 std::wstring install_source_cli_flag(const InstallSource install_source) {
-    switch (install_source) {
-        case InstallSource::local:
-            return L"--local";
-        case InstallSource::release:
-            return L"--release";
-    }
-    return L"--release";
+    (void)install_source;
+    return L"--local";
 }
 
 PreparedInstallerAssets prepare_installer_assets(const InstallSource install_source) {
@@ -255,6 +336,11 @@ PreparedInstallerAssets prepare_installer_assets(const InstallSource install_sou
     const std::filesystem::path root_dir = process_temp_dir();
     const std::filesystem::path helper_script = download_helper_script();
     try_prepare_release_support_asset(kManagedPathsScript, kManagedPathsScriptChecksum);
+    try_prepare_release_support_asset(kInstallBinary, kInstallChecksum);
+    try_prepare_release_support_asset(kSyncpssBinary, kSyncpssChecksum);
+    try_prepare_release_support_asset(kManifestAsset, kManifestChecksum);
+    try_prepare_release_support_asset(L"uninstall_syncpss.sh", L"uninstall_syncpss.sh.sha256");
+    try_prepare_release_support_asset(kMasterFingerprint, nullptr);
     copy_optional_text_asset(exe_dir() / kMaintainerHelperScript, root_dir / kMaintainerHelperScript);
     assets.root_dir = root_dir;
     assets.helper_script = helper_script;

@@ -52,6 +52,23 @@ case "${1:-}" in
             exit 0
         fi
         ;;
+    release)
+        if [ "${2:-}" = "download" ]; then
+            pattern=""
+            while [ "$#" -gt 0 ]; do
+                case "${1}" in
+                    -p)
+                        shift
+                        pattern="${1:-}"
+                        ;;
+                esac
+                shift || true
+            done
+            [ -n "${pattern}" ] || exit 1
+            printf 'downloaded-%s\n' "${pattern}" > "${pattern}"
+            exit 0
+        fi
+        ;;
 esac
 
 exit 1
@@ -196,6 +213,30 @@ cat > "${FAKE_BIN}/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+url=""
+output_path=""
+prev=""
+for arg in "$@"; do
+    if [ "${prev}" = "-o" ]; then
+        output_path="${arg}"
+        prev=""
+        continue
+    fi
+    case "${arg}" in
+        -o)
+            prev="-o"
+            ;;
+        http://*|https://*)
+            url="${arg}"
+            ;;
+    esac
+done
+
+write_asset() {
+    [ -n "${output_path}" ] || return 1
+    printf 'downloaded-from-%s\n' "${url##*/}" > "${output_path}"
+}
+
 case "${SYNCPSSTEST_CURL_MODE:-release-json}" in
     malformed)
         printf '{bad json'
@@ -205,8 +246,36 @@ case "${SYNCPSSTEST_CURL_MODE:-release-json}" in
         printf 'fake curl failure\n' >&2
         exit 22
         ;;
+    latest-fail-list-json)
+        if [[ "${url}" == *"/releases/latest" ]]; then
+            printf 'latest endpoint unavailable\n' >&2
+            exit 22
+        fi
+        if [[ "${url}" == *"/releases?per_page=10" ]]; then
+            printf '[{"tag_name":"v1.2.3","name":"Release v1.2.3"}]\n'
+            exit 0
+        fi
+        write_asset
+        exit 0
+        ;;
+    missing-managed-paths)
+        if [[ "${url}" == *"/managed_paths.sh" || "${url}" == *"/managed_paths.sh.sha256" ]]; then
+            printf 'managed_paths asset missing\n' >&2
+            exit 22
+        fi
+        if [[ "${url}" == *"api.github.com"* ]]; then
+            printf '{"tag_name":"v1.2.3","name":"Release v1.2.3"}\n'
+            exit 0
+        fi
+        write_asset
+        exit 0
+        ;;
     *)
-        printf '{"tag_name":"v1.2.3","name":"Release v1.2.3"}\n'
+        if [[ "${url}" == *"api.github.com"* ]]; then
+            printf '{"tag_name":"v1.2.3","name":"Release v1.2.3"}\n'
+            exit 0
+        fi
+        write_asset
         exit 0
         ;;
 esac
@@ -453,6 +522,7 @@ run_test "invalid branch rejected" bash -lc "! (cd '${ROOT_DIR}' && source scrip
 run_test "installer local flag sets explicit local source" run_in_installer "parse_cli_args --local; [ \"\${MODE}\" = 'install' ] && [ \"\${SYNCPSS_INSTALL_SOURCE}\" = 'local' ]"
 run_test "installer release is the default install source" run_in_installer "[ \"\$(select_install_asset_source 'v1.2.3' 2>/dev/null)\" = 'github' ]"
 run_test "installer local flag fails closed without staged assets" run_failure_contains run_in_installer "parse_cli_args --local; select_install_asset_source 'v1.2.3'" "no local install assets are staged"
+run_test "release tag falls back to releases list when latest endpoint fails" bash -lc "(cd '${ROOT_DIR}' && export PATH='${FAKE_BIN}':\$PATH && export HOME='${HOME}' && export SYNCPSSTEST_CURL_MODE=latest-fail-list-json; source scripts/sh/installer.sh; [ \"\$(latest_release_tag)\" = 'v1.2.3' ])"
 run_test "sudo_run propagates TUI privileged command failures" run_in_installer "INSTALLER_TUI_ENABLED=1; INSTALLER_TUI_ACTIVE=1; installer_tui_run_command_logged(){ return 23; }; prompt_secret(){ printf 'pw'; }; yes_no_prompt(){ printf 'n'; }; sudo(){ [ \"\${1:-}\" = '-n' ] && [ \"\${2:-}\" = 'true' ] && return 0; return 23; }; set +e; sudo_run false >/dev/null 2>&1; status=\$?; set -e; [ \"\${status}\" -eq 23 ]"
 run_test "poisoned repo env rejected" run_failure_contains run_in_installer "export SYNCPSS_PRIVATE_REPO_NAME=\$'bad\nname'; validate_runtime_env_overrides" "SYNCPSS_PRIVATE_REPO_NAME is invalid"
 run_test "managed repo target resolves" run_in_installer "[ \"\$(resolve_private_repo_target gooduser goodrepo | tail -n 1 | tr -d '\r')\" = 'gooduser/goodrepo' ]"
@@ -464,6 +534,7 @@ printf '{bad json\n' > "${HOME}/.syncpss/config.json"
 run_test "runtime config malformed json is rejected" bash -lc "! (cd '${ROOT_DIR}' && export PATH='${FAKE_BIN}':\$PATH && export HOME='${HOME}'; source scripts/sh/installer.sh && runtime_config_string_field binary)"
 
 run_test "malformed release json is ignored" bash -lc "(cd '${ROOT_DIR}' && export PATH='${FAKE_BIN}':\$PATH && export HOME='${HOME}' && export SYNCPSSTEST_CURL_MODE=malformed; source scripts/sh/installer.sh; [ -z \"\$(latest_release_tag || true)\" ])"
+run_test "managed paths support asset falls back to staged helper copy" bash -lc "(cd '${ROOT_DIR}' && export PATH='${FAKE_BIN}':\$PATH && export HOME='${HOME}' && export SYNCPSSTEST_CURL_MODE=missing-managed-paths; source scripts/sh/installer.sh; staged='${TMP_ROOT}/staged-assets'; mkdir -p \"\${staged}\" \"${TMP_ROOT}/downloaded\"; printf 'staged-managed-paths\n' > \"\${staged}/managed_paths.sh\"; printf 'staged-managed-paths-sha\n' > \"\${staged}/managed_paths.sh.sha256\"; SCRIPT_DIR=\"\${staged}\"; download_or_copy_support_asset 'v1.2.3' 'managed_paths.sh' '${TMP_ROOT}/downloaded/managed_paths.sh' && download_or_copy_support_asset 'v1.2.3' 'managed_paths.sh.sha256' '${TMP_ROOT}/downloaded/managed_paths.sh.sha256' && grep -Fq 'staged-managed-paths' '${TMP_ROOT}/downloaded/managed_paths.sh' && grep -Fq 'staged-managed-paths-sha' '${TMP_ROOT}/downloaded/managed_paths.sh.sha256')"
 
 run_test "veracrypt wrong password reports safe retry" run_in_installer "export SYNCPSSTEST_VERACRYPT_MODE=wrong-password; ! mount_or_reuse_veracrypt_volume '${HOME}/.password-store/keys' '${TMP_ROOT}/mount-one' 'secret' >/dev/null 2>&1; printf '%s' \"\$(veracrypt_mount_failure_message '${HOME}/.password-store/keys')\" | grep -Fq 'safe to retry'"
 run_test "veracrypt embedded backup header fallback succeeds" run_in_installer "export SYNCPSSTEST_VERACRYPT_MODE=headerbak-success; result=\"\$(mount_or_reuse_veracrypt_volume '${HOME}/.password-store/keys' '${TMP_ROOT}/mount-two' 'secret' 2>/dev/null | tail -n 1 | tr -d '\r')\"; [ \"\${result%%	*}\" = 'mounted' ]"

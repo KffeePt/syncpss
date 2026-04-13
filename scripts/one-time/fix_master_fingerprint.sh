@@ -33,6 +33,7 @@ compute_master_fingerprint() {
         "${REPO_ROOT}/bin/syncpss-linux-x86_64" \
         "${REPO_ROOT}/bin/install" \
         "${REPO_ROOT}/bin/installer.sh" \
+        "${REPO_ROOT}/bin/managed_paths.sh" \
         "${REPO_ROOT}/bin/uninstall_syncpss.sh" > "${payload}"
     sha256sum "${payload}" | awk '{print $1}'
     rm -f "${payload}"

@@ -131,7 +131,7 @@ std::filesystem::path exe_dir();
 std::filesystem::path process_temp_dir();
 std::string normalize_lf_text(const std::string& input);
 void copy_text_file_with_lf(const std::filesystem::path& source, const std::filesystem::path& destination);
-std::wstring release_asset_url(const std::wstring& asset_name);
+std::wstring release_asset_url(const std::wstring& release_tag, const std::wstring& asset_name);
 std::string normalize_sha256(const std::string& input);
 std::string checksum_from_sha256_file(const std::filesystem::path& checksum_path);
 std::string sha256_for_file(const std::filesystem::path& file_path);
