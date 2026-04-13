@@ -17,6 +17,7 @@ int wmain() {
             } else {
                 distro = select_distro_tui(distros);
             }
+            validate_wsl_distro_name_or_throw(distro);
 
             ensure_distro_users_ready(distro);
             const std::vector<UserEntry> users = list_users_in_distro(distro);
@@ -34,6 +35,7 @@ int wmain() {
             if (!selected_user.has_value()) {
                 throw std::runtime_error("No Linux user was selected");
             }
+            validate_linux_username_or_throw(selected_user->username);
 
             std::wstringstream confirmation;
             confirmation << L"Stage syncpss into distro '" << distro
@@ -50,11 +52,18 @@ int wmain() {
 
         ensure_windows_runtime_support();
         create_start_menu_shortcut(distro, *selected_user);
-        const std::filesystem::path helper_script = resolve_helper_script();
-        copy_helper_to_wsl_home(*selected_user, helper_script);
+        const PreparedInstallerAssets assets = prepare_installer_assets(options.install_source);
+        log_line(
+            "Preparing " + install_source_name(options.install_source) + " installer assets for WSL staging...",
+            kYellow
+        );
+        copy_helper_to_wsl_home(*selected_user, assets);
 
         if (options.open_shell) {
-            open_wsl_installer_window(distro, *selected_user);
+            if (options.pause_on_exit) {
+                prompt_press_enter(L"\nPress Enter to Run WSL Installer...");
+            }
+            open_wsl_installer_window(distro, *selected_user, options.install_source);
         }
 
         if (options.pause_on_exit) {

@@ -21,6 +21,8 @@ inline constexpr wchar_t kRepoOwner[] = L"KffeePt";
 inline constexpr wchar_t kRepoName[] = L"syncpss";
 inline constexpr wchar_t kHelperScript[] = L"installer.sh";
 inline constexpr wchar_t kHelperScriptChecksum[] = L"installer.sh.sha256";
+inline constexpr wchar_t kManagedPathsScript[] = L"managed_paths.sh";
+inline constexpr wchar_t kManagedPathsScriptChecksum[] = L"managed_paths.sh.sha256";
 inline constexpr wchar_t kMaintainerHelperScript[] = L"maintainer_id.sh";
 inline constexpr wchar_t kInstallBinary[] = L"install";
 inline constexpr wchar_t kInstallChecksum[] = L"install.sha256";
@@ -39,6 +41,7 @@ inline constexpr wchar_t kIconSvgName[] = L"syncpss-icon.svg";
 inline constexpr wchar_t kClipboardHelperScriptName[] = L"clear_syncpss_clipboard.ps1";
 inline constexpr wchar_t kLaunchScriptName[] = L"launch_syncpss.cmd";
 inline constexpr wchar_t kLaunchPowerShellScriptName[] = L"launch_syncpss.ps1";
+inline constexpr wchar_t kPurgePowerShellScriptName[] = L"purge.ps1";
 inline constexpr wchar_t kWslRuntimeDirName[] = L".syncpss";
 inline constexpr wchar_t kWslHelpersDirName[] = L"helpers";
 inline constexpr wchar_t kWslConfigDirName[] = L"config";
@@ -59,11 +62,23 @@ struct UserEntry {
     std::filesystem::path home_path;
 };
 
+enum class InstallSource {
+    release,
+    local
+};
+
 struct InstallerOptions {
     std::optional<std::wstring> distro;
     std::optional<std::wstring> user;
+    InstallSource install_source = InstallSource::release;
     bool open_shell = true;
     bool pause_on_exit = true;
+};
+
+struct PreparedInstallerAssets {
+    InstallSource install_source = InstallSource::release;
+    std::filesystem::path root_dir;
+    std::filesystem::path helper_script;
 };
 
 void enable_ansi();
@@ -79,6 +94,9 @@ std::string to_utf8(const std::wstring& input);
 std::wstring trim(const std::wstring& value);
 std::string trim_ascii(const std::string& value);
 std::string strip_nuls(const std::string& value);
+bool contains_control_chars(const std::wstring& value);
+void validate_wsl_distro_name_or_throw(const std::wstring& value);
+void validate_linux_username_or_throw(const std::wstring& value);
 std::wstring quote_arg(const std::wstring& arg);
 ProcessResult run_process(const std::vector<std::wstring>& argv);
 int run_process_interactive(const std::vector<std::wstring>& argv);
@@ -120,7 +138,9 @@ std::string sha256_for_file(const std::filesystem::path& file_path);
 void verify_release_asset_checksum(const std::filesystem::path& asset_path, const std::filesystem::path& checksum_path);
 std::filesystem::path download_release_asset(const std::wstring& asset_name);
 std::filesystem::path download_helper_script();
-std::filesystem::path resolve_helper_script();
+PreparedInstallerAssets prepare_installer_assets(InstallSource install_source);
+std::string install_source_name(InstallSource install_source);
+std::wstring install_source_cli_flag(InstallSource install_source);
 void copy_optional_windows_assets(const std::filesystem::path& app_dir);
 
 std::filesystem::path shortcut_icon_path(const std::filesystem::path& app_dir);
@@ -128,6 +148,6 @@ void ensure_windows_runtime_support();
 void create_start_menu_shortcut(const std::wstring& distro, const UserEntry& user);
 
 std::filesystem::path wsl_stage_dir(const UserEntry& user);
-void copy_helper_to_wsl_home(const UserEntry& user, const std::filesystem::path& helper_script);
-void open_wsl_installer_window(const std::wstring& distro, const UserEntry& user);
+void copy_helper_to_wsl_home(const UserEntry& user, const PreparedInstallerAssets& assets);
+void open_wsl_installer_window(const std::wstring& distro, const UserEntry& user, InstallSource install_source);
 void maybe_open_wsl_shell(const std::wstring& distro, const UserEntry& user);

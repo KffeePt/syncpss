@@ -37,6 +37,9 @@ jobs:
       - name: Build
         run: cmake --build build -- -j"$(nproc)"
 
+      - name: Run Installer QA
+        run: ctest --test-dir build --output-on-failure
+
   windows-installer-check:
     name: windows-installer-check
     runs-on: windows-2022

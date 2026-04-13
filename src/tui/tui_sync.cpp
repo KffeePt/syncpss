@@ -3,10 +3,17 @@
 #include "tui/detail/release.hpp"
 #include "tui/detail/render.hpp"
 
+#include <cstdlib>
+#include <deque>
+#include <fstream>
+
 namespace syncpss::tui {
 using namespace detail;
 
 namespace {
+
+constexpr const char* kUninstallHelperName = "uninstall_syncpss.sh";
+constexpr const char* kUninstallLogEnv = "SYNCPSS_UNINSTALL_LOG_PATH";
 
 enum class ReviewChoice {
     None,
@@ -48,6 +55,27 @@ const char* review_choice_label(ReviewChoice choice) {
         default:
             return "Pending";
     }
+}
+
+std::vector<std::string> tail_log_lines(const std::filesystem::path& path, const std::size_t max_lines = 8U) {
+    std::ifstream input(path);
+    if (!input) {
+        return {};
+    }
+
+    std::deque<std::string> tail;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        tail.push_back(line);
+        if (tail.size() > max_lines) {
+            tail.pop_front();
+        }
+    }
+
+    return {tail.begin(), tail.end()};
 }
 
 }  // namespace
@@ -598,106 +626,71 @@ void TuiApp::nuke_store() {
 }
 
 void TuiApp::uninstall_flow() {
-    const std::vector<std::string> items = {
-        "Remove ~/.password-store",
-        "Remove ~/.syncpss runtime data",
-        "Remove /usr/local/bin syncpss + syncpass",
-        "Remove ~/.gnupg",
-        "Remove /etc/syncpass",
-        "Remove /mnt/keys",
-        "Uninstall pass",
-        "Full cleanup",
-        "Back"
-    };
-    int selected = 0;
+    ensure_dependencies({"bash"});
 
-    while (true) {
-        clear();
-        box(stdscr, 0, 0);
-        mvprintw(1, 2, "Uninstall");
-        mvprintw(2, 2, "Typed DELETE confirmation is required for destructive actions.");
+    const std::filesystem::path preferred_helper =
+        syncpss::util::runtime_install_assets_directory() / kUninstallHelperName;
+    const std::filesystem::path fallback_helper = syncpss::util::runtime_helper_path(kUninstallHelperName);
+    const std::filesystem::path helper_path = syncpss::util::resolve_runtime_helper_path(kUninstallHelperName);
 
-        for (std::size_t index = 0; index < items.size(); ++index) {
-            const int row = 4 + static_cast<int>(index);
-            render_menu_option(row, 2, items[index], static_cast<int>(index) == selected, COLS - 4);
-        }
-        refresh();
-
-        const int ch = getch();
-        if (ch == KEY_RESIZE) {
-            handle_resize();
-            continue;
-        }
-        if (ch == KEY_UP || ch == 'k') {
-            selected = (selected - 1 + static_cast<int>(items.size())) % static_cast<int>(items.size());
-            continue;
-        }
-        if (ch == KEY_DOWN || ch == 'j') {
-            selected = (selected + 1) % static_cast<int>(items.size());
-            continue;
-        }
-        if (ch != '\n' && ch != '\r' && ch != KEY_ENTER) {
-            continue;
-        }
-        if (selected == 8) {
-            return;
-        }
-        if (!confirm_with_text("This action is destructive.", "DELETE")) {
-            show_message("Cancelled", {"Uninstall operation cancelled."});
-            continue;
-        }
-
-        const auto remove_home_dir = [](const std::filesystem::path& path) {
-            if (!syncpss::util::is_safe_recursive_delete_target(path)) {
-                throw std::runtime_error("Refusing to recursively delete unsafe path: " + path.string());
-            }
-            if (std::filesystem::exists(path)) {
-                std::filesystem::remove_all(path);
-            }
-        };
-
-        if (selected == 0 || selected == 7) {
-            remove_home_dir(syncpss::util::default_store_path());
-        }
-        const auto remove_managed_system_path = [](const std::filesystem::path& path) {
-            const std::string rendered = path.lexically_normal().string();
-            if (rendered != "/etc/syncpass" &&
-                rendered != "/usr/local/bin/syncpss" &&
-                rendered != "/usr/local/bin/syncpass") {
-                throw std::runtime_error("Refusing to delete unmanaged system path: " + rendered);
-            }
-            std::error_code ignored;
-            std::filesystem::remove_all(path, ignored);
-            std::filesystem::remove(path, ignored);
-        };
-
-        if (selected == 1 || selected == 7) {
-            remove_home_dir(syncpss::util::default_install_root());
-        }
-        if (selected == 2 || selected == 7) {
-            remove_managed_system_path(syncpss::util::binary_install_path("syncpss"));
-            remove_managed_system_path(syncpss::util::binary_install_path("syncpass"));
-        }
-        if (selected == 3 || selected == 7) {
-            remove_home_dir(syncpss::util::get_real_home() / ".gnupg");
-        }
-        if (selected == 4 || selected == 7) {
-            remove_managed_system_path(syncpss::util::config_directory());
-        }
-        if (selected == 5 || selected == 7) {
-            const std::filesystem::path mount_point = "/mnt/keys";
-            if (std::filesystem::exists(mount_point)) {
-                std::filesystem::remove_all(mount_point);
-            }
-        }
-        if (selected == 6 || selected == 7) {
-            syncpss::util::ProcessResult result = syncpss::util::run({"apt-get", "purge", "-y", "pass"});
-            if (result.exit_code != 0) {
-                throw std::runtime_error("apt-get purge pass failed: " + result.stderr_output);
-            }
-        }
-        show_message("Uninstall", {"Requested cleanup completed."}, kColorSuccess);
+    if (!std::filesystem::exists(helper_path)) {
+        show_message(
+            "Uninstall",
+            {
+                "No staged uninstall helper was found.",
+                "Expected: " + preferred_helper.string(),
+                "Fallback: " + fallback_helper.string(),
+                "Reinstall or update syncpss to stage the uninstall helper locally."
+            },
+            kColorError
+        );
+        return;
     }
+
+    const std::string answer = prompt_input(
+        "Uninstall",
+        "Hand off to the uninstall helper now? It will also remove the Windows Start Menu shortcut when possible. syncpss will close if uninstall succeeds. [Y/n]",
+        "Y"
+    );
+    if (!answer_is_yes(answer, true)) {
+        show_message("Cancelled", {"Uninstall operation cancelled."}, kColorDim);
+        return;
+    }
+
+    const std::filesystem::path uninstall_log =
+        syncpss::util::create_secure_temp_file("syncpss-uninstall", ".log");
+    const std::map<std::string, std::string> uninstall_env = {
+        {kUninstallLogEnv, uninstall_log.string()}
+    };
+    const int uninstall_exit = with_terminal_handoff([&]() {
+        return syncpss::util::run_passthrough(
+            {"bash", helper_path.string(), "--purge-windows-shortcut"},
+            syncpss::util::ProcessOptions{helper_path.parent_path().string(), uninstall_env}
+        );
+    });
+    if (uninstall_exit != 0) {
+        std::vector<std::string> lines = {
+            "The uninstall helper did not complete successfully.",
+            "Helper: " + helper_path.string(),
+            "Exit code: " + std::to_string(uninstall_exit),
+            "Log: " + uninstall_log.string()
+        };
+        const std::vector<std::string> log_tail = tail_log_lines(uninstall_log);
+        if (!log_tail.empty()) {
+            lines.emplace_back("");
+            lines.emplace_back("Recent uninstall log output:");
+            lines.insert(lines.end(), log_tail.begin(), log_tail.end());
+        }
+        show_message(
+            "Uninstall",
+            lines,
+            kColorError
+        );
+        return;
+    }
+
+    endwin();
+    std::exit(0);
 }
 
 }  // namespace syncpss::tui

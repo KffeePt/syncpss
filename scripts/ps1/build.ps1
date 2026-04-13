@@ -342,6 +342,11 @@ function Package-WindowsCrossOutputs {
         Copy-TextFileWithLf -SourcePath $installerScript -DestinationPath $installerOut
         Write-Sha256File -SourcePath $installerOut -OutputPath (Join-Path $binRoot "installer.sh.sha256") -DisplayName "installer.sh"
 
+        $managedPathsScript = Join-Path $RepoRoot "scripts\sh\managed_paths.sh"
+        $managedPathsOut = Join-Path $binRoot "managed_paths.sh"
+        Copy-TextFileWithLf -SourcePath $managedPathsScript -DestinationPath $managedPathsOut
+        Write-Sha256File -SourcePath $managedPathsOut -OutputPath (Join-Path $binRoot "managed_paths.sh.sha256") -DisplayName "managed_paths.sh"
+
         $uninstallScript = Join-Path $RepoRoot "scripts\sh\uninstall_syncpss.sh"
         $uninstallOut = Join-Path $binRoot "uninstall_syncpss.sh"
         Copy-TextFileWithLf -SourcePath $uninstallScript -DestinationPath $uninstallOut
@@ -525,6 +530,8 @@ function Invoke-Build {
                 (Join-Path $repoRoot "$BinDir\install.sha256"),
                 (Join-Path $repoRoot "$BinDir\installer.sh"),
                 (Join-Path $repoRoot "$BinDir\installer.sh.sha256"),
+                (Join-Path $repoRoot "$BinDir\managed_paths.sh"),
+                (Join-Path $repoRoot "$BinDir\managed_paths.sh.sha256"),
                 (Join-Path $repoRoot "$BinDir\uninstall_syncpss.sh"),
                 (Join-Path $repoRoot "$BinDir\uninstall_syncpss.sh.sha256")
             )
@@ -537,6 +544,8 @@ function Invoke-Build {
                 (Join-Path $repoRoot "$BinDir\install.sha256"),
                 (Join-Path $repoRoot "$BinDir\installer.sh"),
                 (Join-Path $repoRoot "$BinDir\installer.sh.sha256"),
+                (Join-Path $repoRoot "$BinDir\managed_paths.sh"),
+                (Join-Path $repoRoot "$BinDir\managed_paths.sh.sha256"),
                 (Join-Path $repoRoot "$BinDir\uninstall_syncpss.sh"),
                 (Join-Path $repoRoot "$BinDir\uninstall_syncpss.sh.sha256")
             )

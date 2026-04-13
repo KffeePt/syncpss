@@ -13,10 +13,12 @@ InstallerOptions parse_options() {
         const std::wstring arg = argv[index];
         if (arg == L"--distro" && index + 1 < argc) {
             options.distro = argv[++index];
+            validate_wsl_distro_name_or_throw(*options.distro);
             continue;
         }
         if (arg == L"--user" && index + 1 < argc) {
             options.user = argv[++index];
+            validate_linux_username_or_throw(*options.user);
             continue;
         }
         if (arg == L"--open-shell") {
@@ -29,6 +31,14 @@ InstallerOptions parse_options() {
         }
         if (arg == L"--no-pause") {
             options.pause_on_exit = false;
+            continue;
+        }
+        if (arg == L"--local") {
+            options.install_source = InstallSource::local;
+            continue;
+        }
+        if (arg == L"--release" || arg == L"--github") {
+            options.install_source = InstallSource::release;
             continue;
         }
     }
@@ -49,6 +59,11 @@ std::vector<std::wstring> list_distros() {
     while (std::getline(stream, line)) {
         const std::wstring distro = trim(to_wide(trim_ascii(line)));
         if (distro.empty() || distro == L"docker-desktop" || distro == L"docker-desktop-data") {
+            continue;
+        }
+        try {
+            validate_wsl_distro_name_or_throw(distro);
+        } catch (...) {
             continue;
         }
         distros.push_back(distro);
@@ -363,6 +378,11 @@ std::vector<UserEntry> list_users_in_distro(const std::wstring& distro) {
         }
         const std::wstring username = entry.path().filename().wstring();
         if (username.empty()) {
+            continue;
+        }
+        try {
+            validate_linux_username_or_throw(username);
+        } catch (...) {
             continue;
         }
         users.push_back(UserEntry{username, entry.path()});

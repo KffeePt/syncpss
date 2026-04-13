@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODE="${1:-install}"
+MODE="install"
+CLI_INSTALL_SOURCE=""
 REPO_OWNER="KffeePt"
 REPO_NAME="syncpss"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${SCRIPT_DIR}/managed_paths.sh" ]; then
+    . "${SCRIPT_DIR}/managed_paths.sh"
+else
+    printf 'error: installer helper missing: %s\n' "${SCRIPT_DIR}/managed_paths.sh" >&2
+    exit 1
+fi
 if [ -f "${SCRIPT_DIR}/maintainer_id.sh" ]; then
     . "${SCRIPT_DIR}/maintainer_id.sh"
 else
@@ -22,6 +29,8 @@ SYNCPS_ASSET="syncpss-linux-x86_64"
 SYNCPS_SHA_ASSET="syncpss-linux-x86_64.sha256"
 MANIFEST_ASSET="manifest.xml"
 MANIFEST_SHA_ASSET="manifest.xml.sha256"
+MANAGED_PATHS_ASSET="managed_paths.sh"
+MANAGED_PATHS_SHA_ASSET="managed_paths.sh.sha256"
 UNINSTALL_ASSET="uninstall_syncpss.sh"
 UNINSTALL_SHA_ASSET="uninstall_syncpss.sh.sha256"
 MASTER_FINGERPRINT_ASSET="master_fingerprint.sha256"
@@ -38,6 +47,10 @@ TMP_DIR="${RUNTIME_DIR}/tmp"
 STORE_BACKUPS_DIR="${RUNTIME_DIR}/store-backups"
 GNUPG_BACKUPS_DIR="${RUNTIME_DIR}/gnupg-backups"
 INSTALL_ASSETS_DIR="${RUNTIME_DIR}/install-assets"
+LOGS_DIR="${RUNTIME_DIR}/logs"
+INSTALLER_LOG_FILE="${LOGS_DIR}/installer.log"
+SYNCPSS_LOG_FILE="${LOGS_DIR}/syncpss.log"
+WSL_INSTALLER_LOG_FILE="${LOGS_DIR}/wsl-installer.log"
 SETTINGS_DIR="${HOME}/.config/syncpss"
 SETTINGS_FILE="${SETTINGS_DIR}/preferences.env"
 BRANCH="main"
@@ -49,8 +62,27 @@ REAL_GROUP="$(id -gn "${REAL_USER}" 2>/dev/null || id -gn)"
 MAX_STORE_BACKUPS=10
 MAX_GNUPG_BACKUPS=20
 VERACRYPT_TIMEOUT_SECONDS="${SYNCPSS_VERACRYPT_TIMEOUT_SECONDS:-20}"
+VERACRYPT_LAST_FAILURE_REASON=""
 ANSI_ENABLED=0
 MOTION_ENABLED=0
+INSTALLER_TUI_ENABLED=0
+INSTALLER_TUI_ACTIVE=0
+INSTALLER_SELECTED_PRIVATE_REPO_NAME=""
+INSTALLER_TUI_TOTAL_STEPS=1
+INSTALLER_TUI_CURRENT_STEP=1
+INSTALLER_TUI_CURRENT_LABEL="Preparing syncpss installer"
+INSTALLER_TUI_STATUS_LINE=""
+INSTALLER_TUI_DEFAULT_FOOTER="Use the keyboard prompts in this terminal whenever input is requested."
+INSTALLER_TUI_MAX_LOG_LINES=12
+INSTALLER_TUI_TOP_OFFSET=1
+INSTALLER_TUI_LAST_FRAME_BUFFER=""
+INSTALLER_TUI_LAST_FRAME_ROWS=0
+INSTALLER_TUI_LAST_KEY=""
+INSTALLER_TUI_LAST_VIEW=""
+INSTALLER_TUI_FORCE_REDRAW=0
+INSTALLER_LOG_READY=0
+declare -a INSTALLER_TUI_LOG_LINES=()
+declare -a INSTALLER_STEP_RESULTS=()
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
     ANSI_ENABLED=1
@@ -61,6 +93,8 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
     COLOR_CYAN=$'\033[36m'
     COLOR_BLUE=$'\033[34m'
     COLOR_MAGENTA=$'\033[35m'
+    COLOR_LIGHT_BLUE=$'\033[94m'
+    COLOR_WHITE=$'\033[97m'
 else
     COLOR_RESET=''
     COLOR_RED=''
@@ -69,11 +103,192 @@ else
     COLOR_CYAN=''
     COLOR_BLUE=''
     COLOR_MAGENTA=''
+    COLOR_LIGHT_BLUE=''
+    COLOR_WHITE=''
 fi
 
 if [ -t 1 ] && [ "${TERM:-}" != "dumb" ] && [ "${SYNCPSS_REDUCED_MOTION:-0}" != "1" ]; then
     MOTION_ENABLED=1
 fi
+
+if [ -t 0 ] && [ -t 1 ] && [ -w /dev/tty ] && [ "${TERM:-}" != "dumb" ] && [ "${SYNCPSS_INSTALLER_TUI:-1}" != "0" ]; then
+    INSTALLER_TUI_ENABLED=1
+fi
+
+mark_step_result() {
+    local step="$1"
+    local status="$2"
+    INSTALLER_STEP_RESULTS[$((step - 1))]="${status}"
+}
+
+installer_log_timestamp() {
+    date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+initialize_installer_logs() {
+    mkdir -p "${LOGS_DIR}"
+    chmod 700 "${LOGS_DIR}" 2>/dev/null || true
+    : >> "${INSTALLER_LOG_FILE}"
+    : >> "${SYNCPSS_LOG_FILE}"
+    : >> "${WSL_INSTALLER_LOG_FILE}"
+    chmod 600 "${INSTALLER_LOG_FILE}" "${SYNCPSS_LOG_FILE}" "${WSL_INSTALLER_LOG_FILE}" 2>/dev/null || true
+    INSTALLER_LOG_READY=1
+}
+
+installer_log_raw() {
+    local level="$1"
+    local message="$2"
+    local timestamp line
+
+    [ "${INSTALLER_LOG_READY}" -eq 1 ] || return 0
+    timestamp="$(installer_log_timestamp)"
+    while IFS= read -r line || [ -n "${line}" ]; do
+        printf '[%s] [%s] %s\n' "${timestamp}" "${level}" "${line}" >> "${INSTALLER_LOG_FILE}"
+    done <<< "${message}"
+}
+
+installer_log_message() {
+    local level="$1"
+    local message
+    message="$(sanitize_display_text "${*:2}")"
+    installer_log_raw "${level}" "${message}"
+}
+
+installer_format_command() {
+    local rendered=''
+    local arg
+    for arg in "$@"; do
+        if [ -n "${rendered}" ]; then
+            rendered+=" "
+        fi
+        printf -v rendered '%s%q' "${rendered}" "${arg}"
+    done
+    printf '%s' "${rendered}"
+}
+
+parse_cli_args() {
+    MODE="install"
+    CLI_INSTALL_SOURCE=""
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            install)
+                MODE="install"
+                ;;
+            update|--update)
+                MODE="update"
+                ;;
+            build-deps|--build-deps)
+                MODE="build-deps"
+                ;;
+            --local)
+                CLI_INSTALL_SOURCE="local"
+                ;;
+            --release|--github)
+                CLI_INSTALL_SOURCE="github"
+                ;;
+            --help|-h)
+                MODE="help"
+                ;;
+            *)
+                fail "Unknown installer argument: $1"
+                ;;
+        esac
+        shift
+    done
+
+    if [ -n "${CLI_INSTALL_SOURCE}" ]; then
+        SYNCPSS_INSTALL_SOURCE="${CLI_INSTALL_SOURCE}"
+        export SYNCPSS_INSTALL_SOURCE
+    fi
+}
+
+validate_runtime_env_overrides() {
+    local release_tag="${SYNCPSS_RELEASE_TAG:-}"
+    local private_repo_name="${SYNCPSS_PRIVATE_REPO_NAME:-}"
+    local install_source="${SYNCPSS_INSTALL_SOURCE:-}"
+    local apt_timeout="${SYNCPSS_APT_LOCK_TIMEOUT:-}"
+    local veracrypt_timeout="${SYNCPSS_VERACRYPT_TIMEOUT_SECONDS:-}"
+
+    if [ -n "${release_tag}" ] && ! syncpss_is_single_line_safe "${release_tag}"; then
+        fail "SYNCPSS_RELEASE_TAG contains unsupported characters."
+    fi
+    if [ -n "${private_repo_name}" ] && ! syncpss_validate_repo_name "${private_repo_name}"; then
+        fail "SYNCPSS_PRIVATE_REPO_NAME is invalid."
+    fi
+    if [ -n "${install_source}" ]; then
+        case "${install_source}" in
+            local|github)
+                ;;
+            *)
+                fail "SYNCPSS_INSTALL_SOURCE must be 'local' or 'github'."
+                ;;
+        esac
+    fi
+    if [ -n "${apt_timeout}" ]; then
+        case "${apt_timeout}" in
+            ''|*[!0-9]*)
+                fail "SYNCPSS_APT_LOCK_TIMEOUT must be a positive integer."
+                ;;
+            *)
+                [ "${apt_timeout}" -ge 10 ] && [ "${apt_timeout}" -le 3600 ] || \
+                    fail "SYNCPSS_APT_LOCK_TIMEOUT must stay between 10 and 3600 seconds."
+                ;;
+        esac
+    fi
+    if [ -n "${veracrypt_timeout}" ]; then
+        case "${veracrypt_timeout}" in
+            ''|*[!0-9]*)
+                fail "SYNCPSS_VERACRYPT_TIMEOUT_SECONDS must be a positive integer."
+                ;;
+            *)
+                [ "${veracrypt_timeout}" -ge 5 ] && [ "${veracrypt_timeout}" -le 600 ] || \
+                    fail "SYNCPSS_VERACRYPT_TIMEOUT_SECONDS must stay between 5 and 600 seconds."
+                ;;
+        esac
+    fi
+}
+
+validate_github_repo_name() {
+    syncpss_validate_repo_name "${1:-}"
+}
+
+validate_github_username() {
+    syncpss_validate_account_name "${1:-}"
+}
+
+validate_repo_target() {
+    syncpss_validate_repo_id "${1:-}"
+}
+
+validate_store_branch() {
+    syncpss_validate_branch_name "${1:-}"
+}
+
+validate_gpg_key_id() {
+    syncpss_validate_gpg_key_id "${1:-}"
+}
+
+require_managed_runtime_path() {
+    local path="$1"
+    syncpss_require_path_in_roots "${path}" "runtime path" "${RUNTIME_DIR}" "${SETTINGS_DIR}" "${STORE_DIR}" "${HOME}/.gnupg" || \
+        fail "Refusing to operate on unmanaged path: ${path}"
+}
+
+require_managed_temp_path() {
+    local path="$1"
+    syncpss_require_path_in_roots "${path}" "temporary path" "${TMP_DIR}" "/tmp" || \
+        fail "Refusing to operate on unmanaged temporary path: ${path}"
+}
+
+require_managed_system_target() {
+    local path="$1"
+    syncpss_require_exact_path "${path}" "system path" \
+        "/usr/local/bin/syncpss" \
+        "/usr/local/bin/syncpass" \
+        "/etc/syncpass" \
+        "/mnt/keys" || fail "Refusing to operate on unmanaged system path: ${path}"
+}
 
 wave_text() {
     local text="$1"
@@ -103,6 +318,11 @@ progress_step() {
     local label="$3"
     local percent filled empty
 
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
+        installer_tui_set_step "${current}" "${total}" "${label}"
+        return
+    fi
+
     percent=$(( current * 100 / total ))
     filled=$(( percent / 10 ))
     empty=$(( 10 - filled ))
@@ -117,14 +337,1006 @@ progress_step() {
         "${label}"
 }
 
+installer_tui_repeat() {
+    local count="$1"
+    local char="${2:- }"
+    local output
+
+    if [ "${count}" -le 0 ] 2>/dev/null; then
+        printf ''
+        return
+    fi
+
+    printf -v output '%*s' "${count}" ''
+    printf '%s' "${output// /${char}}"
+}
+
+installer_tui_app_title() {
+    printf 'SyncPss Installer'
+}
+
+installer_tui_repeat_newlines() {
+    local count="$1"
+    local index
+
+    for ((index=0; index<count; ++index)); do
+        printf '\n'
+    done
+}
+
+installer_tui_terminal_size() {
+    local tty_size
+    local tty_lines tty_cols
+
+    if tty_size="$(stty size < /dev/tty 2>/dev/null)" && [ -n "${tty_size}" ]; then
+        read -r tty_lines tty_cols <<< "${tty_size}"
+        INSTALLER_TUI_COLS="${tty_cols:-100}"
+        INSTALLER_TUI_LINES="${tty_lines:-32}"
+    else
+        INSTALLER_TUI_COLS="$(tput cols 2>/dev/null || printf '100')"
+        INSTALLER_TUI_LINES="$(tput lines 2>/dev/null || printf '32')"
+    fi
+
+    if [ "${INSTALLER_TUI_COLS}" -lt 72 ]; then
+        INSTALLER_TUI_COLS=72
+    fi
+    if [ "${INSTALLER_TUI_LINES}" -lt 20 ]; then
+        INSTALLER_TUI_LINES=20
+    fi
+}
+
+installer_tui_enter() {
+    if [ "${INSTALLER_TUI_ENABLED}" -ne 1 ] || [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        return
+    fi
+
+    printf '\033[?1049h\033[2J\033[H\033[?25l' > /dev/tty
+    INSTALLER_TUI_ACTIVE=1
+    INSTALLER_TUI_LAST_FRAME_BUFFER=''
+    INSTALLER_TUI_LAST_FRAME_ROWS=0
+    INSTALLER_TUI_LAST_VIEW=''
+    INSTALLER_TUI_FORCE_REDRAW=1
+    if [ "${BASH_SUBSHELL:-0}" -eq 0 ]; then
+        trap 'installer_tui_leave' EXIT
+    fi
+}
+
+installer_tui_leave() {
+    if [ "${INSTALLER_TUI_ACTIVE}" -ne 1 ]; then
+        return
+    fi
+
+    printf '\033[?25h\033[?1049l' > /dev/tty
+    INSTALLER_TUI_ACTIVE=0
+    INSTALLER_TUI_LAST_FRAME_BUFFER=''
+    INSTALLER_TUI_LAST_FRAME_ROWS=0
+    INSTALLER_TUI_LAST_VIEW=''
+    INSTALLER_TUI_FORCE_REDRAW=0
+}
+
+installer_tui_row_color() {
+    local kind="${1:-default}"
+    case "${kind}" in
+        title) printf '%s' "${COLOR_YELLOW}" ;;
+        step|task|progress|selected) printf '%s' "${COLOR_LIGHT_BLUE}" ;;
+        warning) printf '%s' "${COLOR_YELLOW}" ;;
+        error) printf '%s' "${COLOR_RED}" ;;
+        success) printf '%s' "${COLOR_GREEN}" ;;
+        dim) printf '%s' "${COLOR_CYAN}" ;;
+        *) printf '' ;;
+    esac
+}
+
+installer_tui_line_kind() {
+    local line="$1"
+    case "${line}" in
+        error:*) printf 'error' ;;
+        warning:*) printf 'warning' ;;
+        syncpss\ Installer|Review|GitHub\ Authentication|Git\ Identity|Private\ Password-Store\ Repo|Ready\ To\ Continue) printf 'title' ;;
+        Step\ *|Current\ task:*|Progress\ *) printf 'step' ;;
+        *complete.*|Success.*) printf 'success' ;;
+        *) printf 'default' ;;
+    esac
+}
+
+installer_tui_sanitize_line() {
+    local text="$1"
+    text="${text//$'\r'/}"
+    text="${text//$'\t'/    }"
+    printf '%s' "${text}" | tr -cd '\11\12\15\40-\176'
+}
+
+installer_tui_append_buffer_row() {
+    local width="$1"
+    local text="$2"
+    local kind="${3:-default}"
+    local padded color_code reset_code
+
+    text="$(installer_tui_sanitize_line "${text}")"
+    printf -v padded '%-*.*s' "${width}" "${width}" "${text}"
+    color_code="$(installer_tui_row_color "${kind}")"
+    reset_code=''
+    if [ -n "${color_code}" ]; then
+        reset_code="${COLOR_RESET}"
+    fi
+    INSTALLER_TUI_FRAME_BUFFER+="| ${color_code}${padded}${reset_code} |"$'\n'
+}
+
+installer_tui_append_separator_row() {
+    local width="$1"
+    installer_tui_append_buffer_row "${width}" "$(installer_tui_repeat "${width}" '-')" "dim"
+}
+
+installer_tui_flush_buffer() {
+    local row frame_row idx max_rows current_line previous_line
+    local -a current_rows=()
+    local -a previous_rows=()
+
+    if [ "${INSTALLER_TUI_FRAME_BUFFER}" = "${INSTALLER_TUI_LAST_FRAME_BUFFER}" ]; then
+        return
+    fi
+
+    if [ -n "${INSTALLER_TUI_FRAME_BUFFER}" ]; then
+        mapfile -t current_rows <<< "${INSTALLER_TUI_FRAME_BUFFER}"
+    fi
+    if [ -n "${INSTALLER_TUI_LAST_FRAME_BUFFER}" ]; then
+        mapfile -t previous_rows <<< "${INSTALLER_TUI_LAST_FRAME_BUFFER}"
+    fi
+
+    max_rows="${#current_rows[@]}"
+    if [ "${#previous_rows[@]}" -gt "${max_rows}" ]; then
+        max_rows="${#previous_rows[@]}"
+    fi
+
+    {
+        frame_row=$((INSTALLER_TUI_TOP_OFFSET + 1))
+        for ((row=1; row<=INSTALLER_TUI_TOP_OFFSET; ++row)); do
+            printf '\033[%s;1H\033[2K' "${row}"
+        done
+
+        if [ "${INSTALLER_TUI_FORCE_REDRAW}" -eq 1 ]; then
+            printf '\033[%s;1H\033[J' "${frame_row}"
+            for ((idx=0; idx<${#current_rows[@]}; ++idx)); do
+                printf '\033[%s;1H%s' "$((frame_row + idx))" "${current_rows[$idx]}"
+            done
+            INSTALLER_TUI_FORCE_REDRAW=0
+        else
+            for ((idx=0; idx<max_rows; ++idx)); do
+                current_line="${current_rows[$idx]-}"
+                previous_line="${previous_rows[$idx]-}"
+                if [ "${current_line}" = "${previous_line}" ]; then
+                    continue
+                fi
+
+                printf '\033[%s;1H\033[2K' "$((frame_row + idx))"
+                if [ -n "${current_line}" ]; then
+                    printf '%s' "${current_line}"
+                fi
+            done
+        fi
+
+        printf '\033[%s;1H' "${frame_row}"
+    } > /dev/tty
+
+    INSTALLER_TUI_LAST_FRAME_BUFFER="${INSTALLER_TUI_FRAME_BUFFER}"
+    INSTALLER_TUI_LAST_FRAME_ROWS="${#current_rows[@]}"
+}
+
+installer_tui_prepare_view() {
+    local view="$1"
+    if [ "${INSTALLER_TUI_LAST_VIEW}" != "${view}" ]; then
+        INSTALLER_TUI_FORCE_REDRAW=1
+        INSTALLER_TUI_LAST_VIEW="${view}"
+    fi
+}
+
+installer_tui_render() {
+    local title="$1"
+    local current="$2"
+    local total="$3"
+    local body="$4"
+    local footer="$5"
+    local cols lines usable_lines inner_width rows_available percent bar_width filled empty body_rows=0
+    local line wrapped_line
+
+    installer_tui_enter
+    installer_tui_prepare_view "progress"
+    installer_tui_terminal_size
+    cols="${INSTALLER_TUI_COLS}"
+    lines="${INSTALLER_TUI_LINES}"
+    usable_lines=$((lines - INSTALLER_TUI_TOP_OFFSET))
+    if [ "${usable_lines}" -lt 18 ]; then
+        usable_lines=18
+    fi
+    inner_width=$((cols - 4))
+    rows_available=$((usable_lines - 9))
+    if [ "${rows_available}" -lt 6 ]; then
+        rows_available=6
+    fi
+
+    percent=$(( current * 100 / total ))
+    bar_width=$((inner_width - 20))
+    if [ "${bar_width}" -lt 12 ]; then
+        bar_width=12
+    fi
+    filled=$(( bar_width * current / total ))
+    empty=$(( bar_width - filled ))
+
+    INSTALLER_TUI_FRAME_BUFFER=''
+    INSTALLER_TUI_FRAME_BUFFER+="+$(installer_tui_repeat $((cols - 2)) '-')+"$'\n'
+    installer_tui_append_buffer_row "${inner_width}" "$(installer_tui_app_title)" "title"
+    installer_tui_append_buffer_row "${inner_width}" ""
+    installer_tui_append_buffer_row "${inner_width}" "Step ${current} of ${total}: ${title}" "step"
+    installer_tui_append_buffer_row "${inner_width}" "Progress [$(
+        installer_tui_repeat "${filled}" '#'
+    )$(
+        installer_tui_repeat "${empty}" '-'
+    )] ${percent}%" "progress"
+    installer_tui_append_buffer_row "${inner_width}" ""
+
+    while IFS= read -r line; do
+        if [ "${body_rows}" -ge "${rows_available}" ]; then
+            break
+        fi
+
+        if [ -z "${line}" ]; then
+            installer_tui_append_buffer_row "${inner_width}" ""
+            body_rows=$((body_rows + 1))
+            continue
+        fi
+
+        while IFS= read -r wrapped_line; do
+            if [ "${body_rows}" -ge "${rows_available}" ]; then
+                break
+            fi
+            installer_tui_append_buffer_row "${inner_width}" "${wrapped_line}" "$(installer_tui_line_kind "${wrapped_line}")"
+            body_rows=$((body_rows + 1))
+        done < <(printf '%s\n' "${line}" | fold -s -w "${inner_width}")
+    done <<< "${body}"
+
+    while [ "${body_rows}" -lt "${rows_available}" ]; do
+        installer_tui_append_buffer_row "${inner_width}" ""
+        body_rows=$((body_rows + 1))
+    done
+
+    installer_tui_append_separator_row "${inner_width}"
+    installer_tui_append_buffer_row "${inner_width}" "${footer}" "dim"
+    INSTALLER_TUI_FRAME_BUFFER+="+$(installer_tui_repeat $((cols - 2)) '-')+"$'\n'
+    installer_tui_flush_buffer
+}
+
+installer_tui_read_key() {
+    local read_key
+
+    installer_tui_read_key_into read_key || return 1
+    printf '%s' "${read_key}"
+}
+
+installer_tui_read_key_into() {
+    local __target="$1"
+    local read_key next
+
+    IFS= read -r -s -n 1 read_key < /dev/tty || return 1
+    if [ -z "${read_key}" ]; then
+        read_key=$'\n'
+    fi
+    if [ "${read_key}" = $'\e' ]; then
+        if IFS= read -r -s -n 1 -t 0.01 next < /dev/tty; then
+            read_key+="${next}"
+            if [ "${next}" = "[" ] && IFS= read -r -s -n 1 -t 0.01 next < /dev/tty; then
+                read_key+="${next}"
+            fi
+        fi
+    fi
+
+    INSTALLER_TUI_LAST_KEY="${read_key}"
+    printf -v "${__target}" '%s' "${read_key}"
+    return 0
+}
+
+installer_tui_key_is_left() {
+    [ "${1:-}" = $'\e[D' ] || [ "${1:-}" = "h" ] || [ "${1:-}" = "H" ]
+}
+
+installer_tui_key_is_right() {
+    [ "${1:-}" = $'\e[C' ] || [ "${1:-}" = "l" ] || [ "${1:-}" = "L" ]
+}
+
+installer_tui_key_is_enter() {
+    [ "${1:-}" = $'\n' ] || [ "${1:-}" = $'\r' ]
+}
+
+installer_tui_notice() {
+    local title="$1"
+    local body="$2"
+
+    if [ "${INSTALLER_TUI_ENABLED}" -ne 1 ]; then
+        warn "${body}"
+        return
+    fi
+
+    installer_tui_render "${title}" 1 1 "${body}" "Press any key to continue"
+    installer_tui_read_key >/dev/null || true
+    installer_tui_resume_progress_view
+}
+
+installer_tui_resume_progress_view() {
+    if [ "${INSTALLER_TUI_ENABLED}" -ne 1 ] || [ "${INSTALLER_TUI_ACTIVE}" -ne 1 ]; then
+        return
+    fi
+
+    INSTALLER_TUI_FORCE_REDRAW=1
+    INSTALLER_TUI_STATUS_LINE="Running..."
+    installer_tui_render_progress_frame
+}
+
+installer_copy_text_to_clipboard() {
+    local text="$1"
+    local tmp_file
+
+    tmp_file="$(mktemp)"
+    printf '%s\n' "${text}" > "${tmp_file}"
+    if clipboard_copy "${tmp_file}"; then
+        rm -f "${tmp_file}"
+        return 0
+    fi
+    rm -f "${tmp_file}"
+    return 1
+}
+
+installer_tui_error_screen() {
+    local message="$1"
+    local clipboard_status
+    local body
+
+    if installer_copy_text_to_clipboard "${message}"; then
+        clipboard_status="The error text was copied to the clipboard."
+    else
+        clipboard_status="Clipboard copy was not available in this environment."
+    fi
+
+    body="Status: Failed"
+    body+=$'\n'$'\n'"${message}"
+    body+=$'\n'$'\n'"${clipboard_status}"
+    body+=$'\n'"Closing automatically in 5 seconds..."
+    installer_tui_render "Installer Error" "${INSTALLER_TUI_CURRENT_STEP}" "${INSTALLER_TUI_TOTAL_STEPS}" "${body}" "The installer will close automatically."
+    sleep 5
+}
+
+installer_tui_append_log() {
+    local entry="$1"
+    local line
+
+    while IFS= read -r line; do
+        INSTALLER_TUI_LOG_LINES+=("${line}")
+    done <<< "${entry}"
+
+    while [ "${#INSTALLER_TUI_LOG_LINES[@]}" -gt "${INSTALLER_TUI_MAX_LOG_LINES}" ]; do
+        INSTALLER_TUI_LOG_LINES=("${INSTALLER_TUI_LOG_LINES[@]:1}")
+    done
+}
+
+installer_tui_progress_body() {
+    local body
+    local log_line
+
+    body="Current task: ${INSTALLER_TUI_STATUS_LINE:-${INSTALLER_TUI_CURRENT_LABEL}}"
+    body+=$'\n'$'\n'"Recent activity:"
+
+    if [ "${#INSTALLER_TUI_LOG_LINES[@]}" -eq 0 ]; then
+        body+=$'\n'"Waiting for installer output..."
+    else
+        for log_line in "${INSTALLER_TUI_LOG_LINES[@]}"; do
+            body+=$'\n'"${log_line}"
+        done
+    fi
+
+    printf '%s' "${body}"
+}
+
+installer_tui_render_prompt_frame() {
+    local title="$1"
+    local prompt="$2"
+    local footer="$3"
+    shift 3
+    local options=("$@")
+    local cols lines usable_lines inner_width top_rows prompt_rows option_rows reserved_rows body_rows=0
+    local line wrapped_line available_log_rows rendered start_index idx progress_bar_width progress_filled progress_empty
+
+    installer_tui_enter
+    installer_tui_prepare_view "prompt"
+    installer_tui_terminal_size
+    cols="${INSTALLER_TUI_COLS}"
+    lines="${INSTALLER_TUI_LINES}"
+    usable_lines=$((lines - INSTALLER_TUI_TOP_OFFSET))
+    if [ "${usable_lines}" -lt 18 ]; then
+        usable_lines=18
+    fi
+    inner_width=$((cols - 4))
+    top_rows=6
+
+    prompt_rows=0
+    while IFS= read -r wrapped_line; do
+        prompt_rows=$((prompt_rows + 1))
+    done < <(printf '%s\n' "${prompt}" | fold -s -w "${inner_width}")
+    if [ "${prompt_rows}" -lt 1 ]; then
+        prompt_rows=1
+    fi
+
+    option_rows="${#options[@]}"
+    reserved_rows=$((prompt_rows + option_rows + 6))
+    available_log_rows=$((usable_lines - top_rows - reserved_rows))
+    if [ "${available_log_rows}" -lt 4 ]; then
+        available_log_rows=4
+    fi
+    progress_bar_width=$((inner_width - 20))
+    if [ "${progress_bar_width}" -lt 12 ]; then
+        progress_bar_width=12
+    fi
+    progress_filled=$(( progress_bar_width * INSTALLER_TUI_CURRENT_STEP / INSTALLER_TUI_TOTAL_STEPS ))
+    progress_empty=$(( progress_bar_width - progress_filled ))
+
+    INSTALLER_TUI_FRAME_BUFFER=''
+    INSTALLER_TUI_FRAME_BUFFER+="+$(installer_tui_repeat $((cols - 2)) '-')+"$'\n'
+    installer_tui_append_buffer_row "${inner_width}" "$(installer_tui_app_title)" "title"
+    installer_tui_append_buffer_row "${inner_width}" "Step ${INSTALLER_TUI_CURRENT_STEP} of ${INSTALLER_TUI_TOTAL_STEPS}: ${INSTALLER_TUI_CURRENT_LABEL}" "step"
+    installer_tui_append_buffer_row "${inner_width}" "Progress [$(installer_tui_repeat "${progress_filled}" '#')$(installer_tui_repeat "${progress_empty}" '-')] $(( INSTALLER_TUI_CURRENT_STEP * 100 / INSTALLER_TUI_TOTAL_STEPS ))%" "progress"
+    installer_tui_append_buffer_row "${inner_width}" ""
+    installer_tui_append_buffer_row "${inner_width}" "Recent activity:" "dim"
+
+    if [ "${#INSTALLER_TUI_LOG_LINES[@]}" -eq 0 ]; then
+        installer_tui_append_buffer_row "${inner_width}" "Waiting for installer output..." "dim"
+        body_rows=1
+    else
+        start_index=0
+        if [ "${#INSTALLER_TUI_LOG_LINES[@]}" -gt "${available_log_rows}" ]; then
+            start_index=$(( ${#INSTALLER_TUI_LOG_LINES[@]} - available_log_rows ))
+        fi
+        for ((idx=start_index; idx<${#INSTALLER_TUI_LOG_LINES[@]}; ++idx)); do
+            installer_tui_append_buffer_row "${inner_width}" "${INSTALLER_TUI_LOG_LINES[$idx]}" "$(installer_tui_line_kind "${INSTALLER_TUI_LOG_LINES[$idx]}")"
+            body_rows=$((body_rows + 1))
+        done
+    fi
+
+    while [ "${body_rows}" -lt "${available_log_rows}" ]; do
+        installer_tui_append_buffer_row "${inner_width}" ""
+        body_rows=$((body_rows + 1))
+    done
+
+    installer_tui_append_separator_row "${inner_width}"
+    installer_tui_append_buffer_row "${inner_width}" "${title}" "title"
+    while IFS= read -r line; do
+        installer_tui_append_buffer_row "${inner_width}" "${line}"
+    done < <(printf '%s\n' "${prompt}" | fold -s -w "${inner_width}")
+    installer_tui_append_buffer_row "${inner_width}" ""
+    for rendered in "${options[@]}"; do
+        if [[ "${rendered}" == "> "* ]]; then
+            installer_tui_append_buffer_row "${inner_width}" "${rendered}" "selected"
+        else
+            installer_tui_append_buffer_row "${inner_width}" "${rendered}"
+        fi
+    done
+    installer_tui_append_separator_row "${inner_width}"
+    installer_tui_append_buffer_row "${inner_width}" "${footer}" "dim"
+    INSTALLER_TUI_FRAME_BUFFER+="+$(installer_tui_repeat $((cols - 2)) '-')+"$'\n'
+    installer_tui_flush_buffer
+}
+
+installer_tui_render_input_frame() {
+    local title="$1"
+    local prompt="$2"
+    local value="$3"
+    local footer="$4"
+    local secret="${5:-0}"
+    local cols lines usable_lines inner_width top_rows prompt_rows reserved_rows body_rows=0
+    local line wrapped_line available_log_rows start_index idx progress_bar_width progress_filled progress_empty display_value
+    local normalized_title normalized_prompt prompt_display_rows
+
+    installer_tui_enter
+    installer_tui_prepare_view "input"
+    installer_tui_terminal_size
+    cols="${INSTALLER_TUI_COLS}"
+    lines="${INSTALLER_TUI_LINES}"
+    usable_lines=$((lines - INSTALLER_TUI_TOP_OFFSET))
+    if [ "${usable_lines}" -lt 18 ]; then
+        usable_lines=18
+    fi
+    inner_width=$((cols - 4))
+    top_rows=6
+
+    prompt_rows=0
+    while IFS= read -r wrapped_line; do
+        prompt_rows=$((prompt_rows + 1))
+    done < <(printf '%s\n' "${prompt}" | fold -s -w "${inner_width}")
+    if [ "${prompt_rows}" -lt 1 ]; then
+        prompt_rows=1
+    fi
+
+    progress_bar_width=$((inner_width - 20))
+    if [ "${progress_bar_width}" -lt 12 ]; then
+        progress_bar_width=12
+    fi
+    progress_filled=$(( progress_bar_width * INSTALLER_TUI_CURRENT_STEP / INSTALLER_TUI_TOTAL_STEPS ))
+    progress_empty=$(( progress_bar_width - progress_filled ))
+
+    if [ "${secret}" -eq 1 ]; then
+        display_value="$(installer_tui_repeat "${#value}" '*')"
+    else
+        display_value="${value}"
+    fi
+
+    normalized_title="$(installer_tui_sanitize_line "${title}")"
+    normalized_prompt="$(installer_tui_sanitize_line "${prompt}")"
+    if [ -n "${normalized_prompt}" ] && [ "${normalized_prompt}" != "${normalized_title}" ]; then
+        prompt_display_rows=$((prompt_rows + 1))
+    else
+        prompt_display_rows=0
+    fi
+    reserved_rows=$((prompt_display_rows + 6))
+    available_log_rows=$((usable_lines - top_rows - reserved_rows))
+    if [ "${available_log_rows}" -lt 4 ]; then
+        available_log_rows=4
+    fi
+
+    INSTALLER_TUI_FRAME_BUFFER=''
+    INSTALLER_TUI_FRAME_BUFFER+="+$(installer_tui_repeat $((cols - 2)) '-')+"$'\n'
+    installer_tui_append_buffer_row "${inner_width}" "$(installer_tui_app_title)" "title"
+    installer_tui_append_buffer_row "${inner_width}" "Step ${INSTALLER_TUI_CURRENT_STEP} of ${INSTALLER_TUI_TOTAL_STEPS}: ${INSTALLER_TUI_CURRENT_LABEL}" "step"
+    installer_tui_append_buffer_row "${inner_width}" "Progress [$(installer_tui_repeat "${progress_filled}" '#')$(installer_tui_repeat "${progress_empty}" '-')] $(( INSTALLER_TUI_CURRENT_STEP * 100 / INSTALLER_TUI_TOTAL_STEPS ))%" "progress"
+    installer_tui_append_buffer_row "${inner_width}" ""
+    installer_tui_append_buffer_row "${inner_width}" "Recent activity:" "dim"
+
+    if [ "${#INSTALLER_TUI_LOG_LINES[@]}" -eq 0 ]; then
+        installer_tui_append_buffer_row "${inner_width}" "Waiting for installer output..." "dim"
+        body_rows=1
+    else
+        start_index=0
+        if [ "${#INSTALLER_TUI_LOG_LINES[@]}" -gt "${available_log_rows}" ]; then
+            start_index=$(( ${#INSTALLER_TUI_LOG_LINES[@]} - available_log_rows ))
+        fi
+        for ((idx=start_index; idx<${#INSTALLER_TUI_LOG_LINES[@]}; ++idx)); do
+            installer_tui_append_buffer_row "${inner_width}" "${INSTALLER_TUI_LOG_LINES[$idx]}" "$(installer_tui_line_kind "${INSTALLER_TUI_LOG_LINES[$idx]}")"
+            body_rows=$((body_rows + 1))
+        done
+    fi
+
+    while [ "${body_rows}" -lt "${available_log_rows}" ]; do
+        installer_tui_append_buffer_row "${inner_width}" ""
+        body_rows=$((body_rows + 1))
+    done
+
+    installer_tui_append_separator_row "${inner_width}"
+    installer_tui_append_buffer_row "${inner_width}" "${title}" "title"
+    if [ -n "${normalized_prompt}" ] && [ "${normalized_prompt}" != "${normalized_title}" ]; then
+        while IFS= read -r line; do
+            installer_tui_append_buffer_row "${inner_width}" "${line}"
+        done < <(printf '%s\n' "${prompt}" | fold -s -w "${inner_width}")
+        installer_tui_append_buffer_row "${inner_width}" ""
+    fi
+    installer_tui_append_buffer_row "${inner_width}" "> ${display_value}" "selected"
+    installer_tui_append_separator_row "${inner_width}"
+    installer_tui_append_buffer_row "${inner_width}" "${footer}" "dim"
+    INSTALLER_TUI_FRAME_BUFFER+="+$(installer_tui_repeat $((cols - 2)) '-')+"$'\n'
+    installer_tui_flush_buffer
+}
+
+installer_tui_render_progress_frame() {
+    if [ "${INSTALLER_TUI_ENABLED}" -ne 1 ]; then
+        return
+    fi
+
+    installer_tui_render \
+        "${INSTALLER_TUI_CURRENT_LABEL}" \
+        "${INSTALLER_TUI_CURRENT_STEP}" \
+        "${INSTALLER_TUI_TOTAL_STEPS}" \
+        "$(installer_tui_progress_body)" \
+        "${INSTALLER_TUI_DEFAULT_FOOTER}"
+}
+
+run_logged_command() {
+    local message="$1"
+    shift
+    local command_text
+
+    command_text="$(installer_format_command "$@")"
+
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        installer_tui_run_command_logged "${message}" "" "$@"
+        return $?
+    fi
+
+    installer_log_message "command" "${message}"
+    installer_log_message "command" "Command: ${command_text}"
+    info "${message}"
+    "$@" 2>&1 | tee -a "${INSTALLER_LOG_FILE}"
+    return "${PIPESTATUS[0]}"
+}
+
+launch_syncpss_now() {
+    if windows_shortcut_launch_ready; then
+        powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass \
+            -Command "Start-Process (Join-Path \$env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\syncpss.lnk')" \
+            >/dev/null 2>&1 && return 0
+    fi
+
+    return 1
+}
+
+windows_shortcut_launch_ready() {
+    command_exists powershell.exe || return 1
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass \
+        -Command "\$shortcut = Join-Path \$env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\syncpss.lnk'; if (Test-Path -LiteralPath \$shortcut) { exit 0 } exit 1" \
+        >/dev/null 2>&1
+}
+
+step_status_line() {
+    local step="$1"
+    local label="$2"
+    local state="${INSTALLER_STEP_RESULTS[$((step - 1))]:-pending}"
+    local rendered="PENDING"
+
+    case "${state}" in
+        ok) rendered="OK" ;;
+        failed) rendered="FAILED" ;;
+        skipped) rendered="SKIPPED" ;;
+    esac
+
+    printf '%s: %s' "${label}" "${rendered}"
+}
+
+installer_finish_summary() {
+    local result="$1"
+    local detail="${2:-}"
+    local body answer launch_ready=0
+
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        if [ "${result}" = "success" ]; then
+            if windows_shortcut_launch_ready; then
+                launch_ready=1
+            fi
+            body=$'Status: Success\n\n'
+            if [ "${INSTALLER_TUI_TOTAL_STEPS}" -eq 3 ]; then
+                body+="$(step_status_line 1 'Runtime directories')"
+                body+=$'\n'"$(step_status_line 2 'Verified release assets')"
+                body+=$'\n'"$(step_status_line 3 'Install and verification asset staging')"
+            else
+                body+="$(step_status_line 1 'Runtime folders and dependencies')"
+                body+=$'\n'"$(step_status_line 2 'Verified release assets')"
+                body+=$'\n'"$(step_status_line 3 'GitHub authentication and repo target')"
+                body+=$'\n'"$(step_status_line 4 'SSH access and private repo preparation')"
+                body+=$'\n'"$(step_status_line 5 'GPG keys and password-store state')"
+                body+=$'\n'"$(step_status_line 6 'syncpss install and verification assets')"
+            fi
+            if [ -n "${detail}" ]; then
+                body+=$'\n'"Private password-store repo: ${detail}"
+            fi
+            if [ "${launch_ready}" -eq 1 ]; then
+                body+=$'\n'"Launch target: Windows Start Menu shortcut"
+            else
+                body+=$'\n'"Launch target: not available from this environment"
+            fi
+            installer_tui_render "Installation Complete" "${INSTALLER_TUI_TOTAL_STEPS}" "${INSTALLER_TUI_TOTAL_STEPS}" "${body}" "Choose what to do next"
+
+            if [ "${launch_ready}" -eq 1 ]; then
+                answer="$(yes_no_prompt 'Run syncpss' 'Run syncpss now from the Windows Start Menu shortcut?' 'Y' || true)"
+            else
+                answer="n"
+            fi
+            if [ "${launch_ready}" -eq 1 ] && answer_is_yes "${answer}"; then
+                if launch_syncpss_now; then
+                    installer_tui_render "Launch Requested" "${INSTALLER_TUI_TOTAL_STEPS}" "${INSTALLER_TUI_TOTAL_STEPS}" \
+                        "syncpss is launching now from the Windows shortcut." \
+                        "Press any key to close the installer"
+                else
+                    installer_tui_render "Launch Failed" "${INSTALLER_TUI_TOTAL_STEPS}" "${INSTALLER_TUI_TOTAL_STEPS}" \
+                        "syncpss finished installing, but the Windows shortcut could not be launched automatically." \
+                        "Press any key to close the installer"
+                fi
+            else
+                installer_tui_render "Installation Complete" "${INSTALLER_TUI_TOTAL_STEPS}" "${INSTALLER_TUI_TOTAL_STEPS}" \
+                    "$(if [ "${launch_ready}" -eq 1 ]; then printf '%s' 'syncpss finished installing successfully.'; else printf '%s' 'syncpss finished installing successfully. The Windows shortcut was not available from this environment, so Run Now was skipped.'; fi)" \
+                    "Press any key to close the installer"
+            fi
+            installer_tui_read_key >/dev/null || true
+        else
+            mark_step_result "${INSTALLER_TUI_CURRENT_STEP}" "failed"
+            installer_tui_render "Installation Failed" "${INSTALLER_TUI_CURRENT_STEP}" "${INSTALLER_TUI_TOTAL_STEPS}" \
+                "Status: Failed\n\n${detail}" \
+                "Press any key to close the installer"
+            installer_tui_read_key >/dev/null || true
+        fi
+        return
+    fi
+
+    if [ "${result}" = "success" ]; then
+        success "Installation complete."
+        if [ -n "${detail}" ]; then
+            info "Private password-store repo: ${detail}"
+        fi
+        if windows_shortcut_launch_ready; then
+            info "Windows Start Menu shortcut is ready."
+        else
+            info "Windows Start Menu shortcut was not available from this environment."
+        fi
+        return
+    fi
+
+    warn "${detail}"
+}
+
+installer_tui_menu_prompt() {
+    local title="$1"
+    local prompt="$2"
+    local default_index="$3"
+    shift 3
+    local entries=("$@")
+    local selected="${default_index}"
+    local key idx entry entry_key entry_value entry_label
+    local rendered_options=()
+
+    if [ "${INSTALLER_TUI_ENABLED}" -ne 1 ]; then
+        return 1
+    fi
+
+    while true; do
+        rendered_options=()
+        for ((idx=0; idx<${#entries[@]}; ++idx)); do
+            IFS='|' read -r entry_key entry_value entry_label <<< "${entries[$idx]}"
+            if [ "${idx}" -eq "${selected}" ]; then
+                rendered_options+=("> ${entry_label}")
+            else
+                rendered_options+=("  ${entry_label}")
+            fi
+        done
+
+        installer_tui_render_prompt_frame \
+            "${title}" \
+            "${prompt}" \
+            "[Up/Down] move  [Enter] select" \
+            "${rendered_options[@]}"
+
+        if ! installer_tui_read_key_into key; then
+            key=''
+        fi
+        case "${key}" in
+            $'\e[A'|k|K)
+                if [ "${selected}" -gt 0 ]; then
+                    selected=$((selected - 1))
+                else
+                    selected=$(( ${#entries[@]} - 1 ))
+                fi
+                ;;
+            $'\e[B'|j|J)
+                if [ "${selected}" -lt $(( ${#entries[@]} - 1 )) ]; then
+                    selected=$((selected + 1))
+                else
+                    selected=0
+                fi
+                ;;
+            "")
+                ;;
+            *)
+                for ((idx=0; idx<${#entries[@]}; ++idx)); do
+                    IFS='|' read -r entry_key entry_value entry_label <<< "${entries[$idx]}"
+                    if [ "${key}" = "${entry_key}" ] || [ "${key}" = "${entry_key^^}" ]; then
+                        installer_tui_resume_progress_view
+                        printf '%s' "${entry_value}"
+                        return 0
+                    fi
+                done
+                ;;
+        esac
+
+        if installer_tui_key_is_enter "${key}"; then
+            IFS='|' read -r entry_key entry_value entry_label <<< "${entries[$selected]}"
+            installer_tui_resume_progress_view
+            printf '%s' "${entry_value}"
+            return 0
+        fi
+    done
+}
+
+installer_tui_text_prompt() {
+    local title="$1"
+    local prompt="$2"
+    local initial_value="${3:-}"
+    local secret="${4:-0}"
+    local value="${initial_value}"
+    local key
+
+    while true; do
+        installer_tui_render_input_frame \
+            "${title}" \
+            "${prompt}" \
+            "${value}" \
+            "[Enter] accept  [Esc] cancel  [Backspace] delete" \
+            "${secret}"
+        if ! installer_tui_read_key_into key; then
+            key=''
+        fi
+
+        if installer_tui_key_is_enter "${key}"; then
+            installer_tui_resume_progress_view
+            printf '%s' "${value}"
+            return 0
+        fi
+
+        case "${key}" in
+            $'\177'|$'\010')
+                if [ -n "${value}" ]; then
+                    value="${value%?}"
+                fi
+                ;;
+            $'\e')
+                installer_tui_resume_progress_view
+                printf '%s' "${initial_value}"
+                return 0
+                ;;
+            *)
+                if [ "${#key}" -eq 1 ]; then
+                    case "${key}" in
+                        [[:print:]])
+                            value+="${key}"
+                            ;;
+                    esac
+                fi
+                ;;
+        esac
+    done
+}
+
+menu_prompt() {
+    local title="$1"
+    local prompt="$2"
+    local default_index="$3"
+    shift 3
+    local entries=("$@")
+    local choice input idx entry entry_key entry_value entry_label
+
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
+        installer_tui_menu_prompt "${title}" "${prompt}" "${default_index}" "${entries[@]}"
+        return 0
+    fi
+
+    printf '%s\n' "${prompt}" >&2
+    for ((idx=0; idx<${#entries[@]}; ++idx)); do
+        IFS='|' read -r entry_key entry_value entry_label <<< "${entries[$idx]}"
+        printf '  [%s] %s\n' "${entry_key}" "${entry_label}" >&2
+    done
+
+    while true; do
+        read -r input || input=''
+        if [ -z "${input}" ]; then
+            IFS='|' read -r entry_key entry_value entry_label <<< "${entries[$default_index]}"
+            printf '%s' "${entry_value}"
+            return 0
+        fi
+        for ((idx=0; idx<${#entries[@]}; ++idx)); do
+            IFS='|' read -r entry_key entry_value entry_label <<< "${entries[$idx]}"
+            if [ "${input}" = "${entry_key}" ] || [ "${input}" = "${entry_key^^}" ] || [ "${input}" = "${entry_value}" ]; then
+                printf '%s' "${entry_value}"
+                return 0
+            fi
+        done
+    done
+}
+
+yes_no_prompt() {
+    local title="$1"
+    local prompt="$2"
+    local default_answer="${3:-Y}"
+
+    if [ "${default_answer}" = "N" ] || [ "${default_answer}" = "n" ]; then
+        menu_prompt "${title}" "${prompt}" 1 \
+            "y|Y|Yes" \
+            "n|N|No"
+    else
+        menu_prompt "${title}" "${prompt}" 0 \
+            "y|Y|Yes" \
+            "n|N|No"
+    fi
+}
+
+installer_tui_set_step() {
+    INSTALLER_TUI_CURRENT_STEP="$1"
+    INSTALLER_TUI_TOTAL_STEPS="$2"
+    INSTALLER_TUI_CURRENT_LABEL="$3"
+    INSTALLER_TUI_STATUS_LINE="$3"
+    installer_tui_append_log "Step ${1}/${2}: ${3}"
+    installer_tui_render_progress_frame
+}
+
+installer_tui_begin_flow() {
+    INSTALLER_TUI_TOTAL_STEPS="$1"
+    INSTALLER_TUI_CURRENT_STEP=1
+    INSTALLER_TUI_CURRENT_LABEL="$2"
+    INSTALLER_TUI_STATUS_LINE="$2"
+    INSTALLER_TUI_LOG_LINES=()
+    installer_tui_enter
+    installer_tui_render_progress_frame
+}
+
+installer_tui_ingest_log_file() {
+    local log_file="$1"
+    local previous_line_count="${2:-0}"
+    local current_line_count line
+
+    current_line_count="$(wc -l < "${log_file}" 2>/dev/null || printf '0')"
+    if [ "${current_line_count}" -gt "${previous_line_count}" ]; then
+        while IFS= read -r line; do
+            [ -n "${line}" ] || continue
+            installer_tui_append_log "${line}"
+            installer_log_raw "command" "$(sanitize_display_text "${line}")"
+        done < <(sed -n "$((previous_line_count + 1)),${current_line_count}p" "${log_file}" 2>/dev/null || true)
+    fi
+
+    printf '%s' "${current_line_count}"
+}
+
+installer_tui_run_command_logged() {
+    local message="$1"
+    local stdin_text="${2:-}"
+    shift 2
+    local log_file pid status=0 spinner_index=0 line_count=0 command_text
+    local spinner='|/-\'
+
+    log_file="$(mktemp)"
+    command_text="$(installer_format_command "$@")"
+    INSTALLER_TUI_STATUS_LINE="${message}"
+    installer_tui_append_log "${message}"
+    installer_tui_append_log "Command: ${command_text}"
+    installer_log_message "command" "${message}"
+    installer_log_message "command" "Command: ${command_text}"
+
+    if [ -n "${stdin_text}" ]; then
+        (
+            printf '%s\n' "${stdin_text}" | "$@"
+        ) >"${log_file}" 2>&1 &
+    else
+        "$@" >"${log_file}" 2>&1 &
+    fi
+    pid=$!
+
+    while kill -0 "${pid}" >/dev/null 2>&1; do
+        line_count="$(installer_tui_ingest_log_file "${log_file}" "${line_count}")"
+        INSTALLER_TUI_STATUS_LINE="${message} ${spinner:${spinner_index}:1}"
+        installer_tui_render_progress_frame
+        spinner_index=$(( (spinner_index + 1) % 4 ))
+        sleep 0.12
+    done
+
+    wait "${pid}" || status=$?
+    line_count="$(installer_tui_ingest_log_file "${log_file}" "${line_count}")"
+    rm -f "${log_file}"
+
+    if [ "${status}" -ne 0 ]; then
+        INSTALLER_TUI_STATUS_LINE="${message} failed"
+        installer_tui_append_log "warning: ${message} exited with code ${status}"
+        installer_log_message "warn" "${message} exited with code ${status}"
+        installer_tui_render_progress_frame
+        return "${status}"
+    fi
+
+    INSTALLER_TUI_STATUS_LINE="${message}"
+    installer_tui_append_log "${message} complete."
+    installer_log_message "info" "${message} complete."
+    installer_tui_render_progress_frame
+    return 0
+}
+
 run_with_spinner() {
     local message="$1"
     shift
 
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
+        installer_tui_run_command_logged "${message}" "" "$@"
+        return $?
+    fi
+
     if [ "${MOTION_ENABLED}" -ne 1 ]; then
         info "${message}"
-        "$@"
-        return
+        run_logged_command "${message}" "$@"
+        return $?
     fi
 
     local log_file pid status=0 spinner_index=0
@@ -149,19 +1361,47 @@ run_with_spinner() {
     fi
 
     rm -f "${log_file}"
-    success ">> ${message}"
+success ">> ${message}"
+}
+
+sanitize_display_text() {
+    syncpss_strip_control_chars "${1:-}"
 }
 
 log() {
-    printf '%s\n' "$*"
+    local rendered
+    rendered="$(sanitize_display_text "$*")"
+    installer_log_raw "info" "${rendered}"
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        installer_tui_append_log "${rendered}"
+        installer_tui_render_progress_frame
+        return
+    fi
+    printf '%s\n' "${rendered}"
 }
 
 warn() {
-    printf '%swarning:%s %s\n' "${COLOR_RED}" "${COLOR_RESET}" "$*" >&2
+    local rendered
+    rendered="$(sanitize_display_text "$*")"
+    installer_log_raw "warn" "${rendered}"
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        installer_tui_append_log "warning: ${rendered}"
+        installer_tui_render_progress_frame
+        return
+    fi
+    printf '%swarning:%s %s\n' "${COLOR_RED}" "${COLOR_RESET}" "${rendered}" >&2
 }
 
 fail() {
-    printf '%serror:%s %s\n' "${COLOR_RED}" "${COLOR_RESET}" "$*" >&2
+    local rendered
+    rendered="$(sanitize_display_text "$*")"
+    installer_log_raw "error" "${rendered}"
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        installer_tui_append_log "error: ${rendered}"
+        installer_tui_error_screen "${rendered}"
+        installer_tui_leave
+    fi
+    printf '%serror:%s %s\n' "${COLOR_RED}" "${COLOR_RESET}" "${rendered}" >&2
     exit 1
 }
 
@@ -170,19 +1410,52 @@ section() {
     if [ -n "${text}" ]; then
         text="$(printf '%s' "${text}" | awk '{ if (length($1) > 0) { $1 = toupper(substr($1,1,1)) substr($1,2) } print }')"
     fi
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        installer_tui_append_log "${text}"
+        installer_tui_render_progress_frame
+        return
+    fi
     printf '\n%s>> %s%s\n' "${COLOR_YELLOW}" "${text}" "${COLOR_RESET}"
 }
 
 info() {
-    printf '%s%s%s\n' "${COLOR_CYAN}" "$*" "${COLOR_RESET}"
+    local rendered
+    rendered="$(sanitize_display_text "$*")"
+    installer_log_raw "info" "${rendered}"
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        installer_tui_append_log "${rendered}"
+        installer_tui_render_progress_frame
+        return
+    fi
+    printf '%s%s%s\n' "${COLOR_CYAN}" "${rendered}" "${COLOR_RESET}"
 }
 
 success() {
-    printf '%s%s%s\n' "${COLOR_GREEN}" "$*" "${COLOR_RESET}"
+    local rendered
+    rendered="$(sanitize_display_text "$*")"
+    installer_log_raw "success" "${rendered}"
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        installer_tui_append_log "${rendered}"
+        installer_tui_render_progress_frame
+        return
+    fi
+    printf '%s%s%s\n' "${COLOR_GREEN}" "${rendered}" "${COLOR_RESET}"
 }
 
 prompt_label() {
-    printf '%s>> %s%s' "${COLOR_BLUE}" "$1" "${COLOR_RESET}" >&2
+    if [ -w /dev/tty ]; then
+        printf '%s>> %s%s' "${COLOR_BLUE}" "$1" "${COLOR_RESET}" > /dev/tty
+    else
+        printf '%s>> %s%s' "${COLOR_BLUE}" "$1" "${COLOR_RESET}" >&2
+    fi
+}
+
+prompt_line() {
+    if [ -w /dev/tty ]; then
+        printf '%s\n' "$1" > /dev/tty
+    else
+        printf '%s\n' "$1" >&2
+    fi
 }
 
 auto_accept_default_enabled() {
@@ -195,22 +1468,50 @@ command_exists() {
 
 sudo_run() {
     if [ "$(id -u)" -eq 0 ]; then
-        "$@"
+        if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
+            installer_tui_run_command_logged "Running privileged command" "" "$@"
+        else
+            "$@"
+        fi
     else
-        local status answer
+        local status answer password
         while true; do
-            if sudo "$@"; then
-                return 0
+            if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
+                if sudo -n true >/dev/null 2>&1; then
+                    if installer_tui_run_command_logged "Running privileged command" "" sudo -n "$@"; then
+                        return 0
+                    else
+                        status=$?
+                        return "${status}"
+                    fi
+                else
+                    password="$(prompt_secret "sudo password for ${REAL_USER}")"
+                    if installer_tui_run_command_logged "Authorizing with sudo" "${password}" sudo -S -p '' -v; then
+                        if installer_tui_run_command_logged "Running privileged command" "" sudo -n "$@"; then
+                            return 0
+                        else
+                            status=$?
+                            return "${status}"
+                        fi
+                    fi
+                    status=$?
+                fi
+            else
+                if sudo -n true >/dev/null 2>&1; then
+                    sudo -n "$@"
+                    return $?
+                fi
+                if sudo -v; then
+                    sudo -n "$@"
+                    return $?
+                fi
+                status=$?
             fi
-            status=$?
             if [ ! -t 0 ] || [ ! -t 1 ]; then
                 return "${status}"
             fi
-            warn "sudo did not complete. If the prompt closed after 3 password attempts, you can try again."
-            read -r -p "Retry this sudo step? [Y/n] " answer || {
-                printf '\n' >&2
-                return "${status}"
-            }
+            warn "sudo authentication did not complete. You can retry the sudo password prompt."
+            answer="$(yes_no_prompt 'Sudo Password Retry' 'Retry sudo authentication for this privileged step?' 'Y' || true)"
             if ! answer_is_yes "${answer}"; then
                 return "${status}"
             fi
@@ -220,6 +1521,13 @@ sudo_run() {
 }
 
 ensure_runtime_dir_ownership() {
+    require_managed_runtime_path "${RUNTIME_DIR}"
+    require_managed_runtime_path "${RUNTIME_CONFIG_DIR}"
+    require_managed_runtime_path "${TMP_DIR}"
+    require_managed_runtime_path "${LOGS_DIR}"
+    require_managed_runtime_path "${STORE_BACKUPS_DIR}"
+    require_managed_runtime_path "${GNUPG_BACKUPS_DIR}"
+    require_managed_runtime_path "${INSTALL_ASSETS_DIR}"
     if [ -e "${RUNTIME_DIR}" ]; then
         sudo_run chown -R "${REAL_USER}:${REAL_GROUP}" "${RUNTIME_DIR}"
     fi
@@ -227,12 +1535,14 @@ ensure_runtime_dir_ownership() {
     sudo_run install -d -m 700 -o "${REAL_USER}" -g "${REAL_GROUP}" "${RUNTIME_DIR}"
     sudo_run install -d -m 700 -o "${REAL_USER}" -g "${REAL_GROUP}" "${RUNTIME_CONFIG_DIR}"
     sudo_run install -d -m 700 -o "${REAL_USER}" -g "${REAL_GROUP}" "${TMP_DIR}"
+    sudo_run install -d -m 700 -o "${REAL_USER}" -g "${REAL_GROUP}" "${LOGS_DIR}"
     sudo_run install -d -m 700 -o "${REAL_USER}" -g "${REAL_GROUP}" "${STORE_BACKUPS_DIR}"
     sudo_run install -d -m 700 -o "${REAL_USER}" -g "${REAL_GROUP}" "${GNUPG_BACKUPS_DIR}"
     sudo_run install -d -m 700 -o "${REAL_USER}" -g "${REAL_GROUP}" "${INSTALL_ASSETS_DIR}"
 }
 
 ensure_settings_dir() {
+    require_managed_runtime_path "${SETTINGS_DIR}"
     sudo_run install -d -m 700 -o "${REAL_USER}" -g "${REAL_GROUP}" "${SETTINGS_DIR}"
 }
 
@@ -250,8 +1560,10 @@ save_saved_private_repo_name() {
     local temp_file
 
     [ -n "${repo_name}" ] || return 0
+    validate_github_repo_name "${repo_name}" || fail "Invalid private repo preference: ${repo_name}"
     ensure_settings_dir
     temp_file="$(mktemp)"
+    require_managed_temp_path "${temp_file}"
     printf 'SYNCPSS_PRIVATE_REPO_NAME=%s\n' "${repo_name}" > "${temp_file}"
     sudo_run install -m 600 -o "${REAL_USER}" -g "${REAL_GROUP}" "${temp_file}" "${SETTINGS_FILE}"
     rm -f "${temp_file}"
@@ -277,6 +1589,7 @@ prune_old_store_backups() {
     local index
     for ((index=0; index<to_remove; ++index)); do
         local target="${STORE_BACKUPS_DIR}/${backups[${index}]}"
+        require_managed_runtime_path "${target}"
         log "Pruning old backup ${target}"
         rm -rf "${target}"
     done
@@ -302,6 +1615,7 @@ prune_old_gnupg_backups() {
     local index
     for ((index=0; index<to_remove; ++index)); do
         local target="${GNUPG_BACKUPS_DIR}/${backups[${index}]}"
+        require_managed_runtime_path "${target}"
         log "Pruning old GPG backup ${target}"
         rm -rf "${target}"
     done
@@ -522,32 +1836,39 @@ prompt_value() {
 
     if [ -n "${default_value}" ]; then
         if auto_accept_default_enabled; then
-            prompt_label "${message} [${default_value}]"
-            printf ' %s(auto)%s %s\n' "${COLOR_GREEN}" "${COLOR_RESET}" "${default_value}" >&2
+            prompt_line ">> ${message}: ${default_value} (auto)"
             printf '%s' "${default_value}"
             return 0
         fi
+        if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+            installer_tui_text_prompt "${message}" "${message}" "${default_value}" 0
+            return 0
+        fi
         prompt_label "${message} [${default_value}]: "
-        read -r input
+        if [ -r /dev/tty ]; then
+            read -r input < /dev/tty
+        else
+            read -r input
+        fi
         printf '%s' "${input:-${default_value}}"
     else
+        if auto_accept_default_enabled; then
+            prompt_line ">> ${message}: (auto skip)"
+            printf ''
+            return 0
+        fi
+        if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+            installer_tui_text_prompt "${message}" "${message}" "" 0
+            return 0
+        fi
         prompt_label "${message}: "
-        read -r input
+        if [ -r /dev/tty ]; then
+            read -r input < /dev/tty
+        else
+            read -r input
+        fi
         printf '%s' "${input}"
     fi
-}
-
-validate_github_repo_name() {
-    local repo_name="$1"
-    [ -n "${repo_name}" ] || return 1
-    case "${repo_name}" in
-        *[!A-Za-z0-9._-]*)
-            return 1
-            ;;
-        *)
-            return 0
-            ;;
-    esac
 }
 
 prompt_private_repo_name() {
@@ -641,9 +1962,50 @@ detected_private_repo_name() {
 prompt_secret() {
     local message="$1"
     local input
+    local prompt_title prompt_body
+
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        case "${message}" in
+            sudo\ password\ for\ *)
+                prompt_title="Sudo Password:"
+                prompt_body="Enter the sudo password for ${REAL_USER}."
+                ;;
+            VeraCrypt\ container\ password)
+                prompt_title="VeraCrypt Password:"
+                prompt_body="Enter the VeraCrypt volume password."
+                ;;
+            Confirm\ VeraCrypt\ container\ password)
+                prompt_title="Confirm VeraCrypt Password:"
+                prompt_body="Re-enter the VeraCrypt volume password."
+                ;;
+            New\ VeraCrypt\ container\ password)
+                prompt_title="New VeraCrypt Password:"
+                prompt_body="Enter a new password for the VeraCrypt volume."
+                ;;
+            *)
+                prompt_title="${message}:"
+                prompt_body="${message}"
+                ;;
+        esac
+
+        while true; do
+            input="$(installer_tui_text_prompt "${prompt_title}" "${prompt_body}" "" 1)"
+            if [ -n "${input}" ]; then
+                printf '%s' "${input}"
+                return 0
+            fi
+            warn "${message} is required."
+        done
+    fi
+
     while true; do
         prompt_label "${message}: "
-        if ! read -r -s input; then
+        if [ -r /dev/tty ]; then
+            if ! read -r -s input < /dev/tty; then
+                printf '\n' >&2
+                fail "${message} input was not provided."
+            fi
+        elif ! read -r -s input; then
             printf '\n' >&2
             fail "${message} input was not provided."
         fi
@@ -665,8 +2027,24 @@ answer_is_yes() {
     esac
 }
 
+gh_auth_ready() {
+    command_exists gh && gh auth status >/dev/null 2>&1
+}
+
+gh_user_field() {
+    local jq_filter="$1"
+    local field_name="$2"
+    local value
+
+    value="$(gh api user --jq "${jq_filter}" 2>/dev/null | tr -d '\r' || true)"
+    if [ -n "${value}" ] && ! syncpss_is_single_line_safe "${value}"; then
+        fail "GitHub CLI returned an unsafe ${field_name} value."
+    fi
+    printf '%s' "${value}"
+}
+
 ensure_github_auth() {
-    if gh auth status >/dev/null 2>&1; then
+    if gh_auth_ready; then
         return
     fi
 
@@ -680,9 +2058,23 @@ ensure_github_auth() {
 }
 
 ensure_git_identity() {
-    local current_name current_email new_name new_email
+    local current_name current_email new_name new_email modify_answer
     current_name="$(git config --global --get user.name || true)"
     current_email="$(git config --global --get user.email || true)"
+
+    if [ -n "${current_name}" ] || [ -n "${current_email}" ]; then
+        info "Detected existing Git identity."
+        info "user.name: ${current_name:-<not set>}"
+        info "user.email: ${current_email:-<not set>}"
+        modify_answer="$(yes_no_prompt 'Git Identity' 'Modify the existing Git identity?' 'N')"
+        if ! answer_is_yes "${modify_answer:-N}"; then
+            info "Keeping the existing Git identity unchanged."
+            return
+        fi
+        info "Press Enter to keep any existing value while editing."
+    else
+        info "Git identity is not configured yet. You can add it now, or leave the optional fields blank."
+    fi
 
     new_name="$(prompt_value 'Git user.name (optional)' "${current_name}")"
     new_email="$(prompt_value 'Git user.email (optional)' "${current_email}")"
@@ -739,7 +2131,15 @@ ensure_ssh_key() {
         log "    Open your pass-store repo > Settings > Deploy keys"
         log "    Use a deploy key when you want to share access without giving write access."
         log
-        read -r -p "Press Enter after the key is authorized on GitHub..."
+        if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
+            menu_prompt \
+                "GitHub SSH Key Authorization" \
+                "Authorize the SSH key on GitHub, then choose Continue." \
+                0 \
+                "c|continue|Continue" >/dev/null
+        else
+            read -r -p "Press Enter after the key is authorized on GitHub..."
+        fi
     else
         info "Existing SSH key detected. Reusing it and continuing."
     fi
@@ -792,12 +2192,26 @@ veracrypt_with_password() {
     printf '%s\n' "${password}" | veracrypt --text --non-interactive --stdin "$@"
 }
 
+filter_valid_gpg_fingerprints() {
+    local fingerprint normalized
+    while IFS= read -r fingerprint; do
+        normalized="$(printf '%s' "${fingerprint}" | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
+        [ -n "${normalized}" ] || continue
+        syncpss_validate_gpg_key_id "${normalized}" || continue
+        case "${#normalized}" in
+            40)
+                printf '%s\n' "${normalized}"
+                ;;
+        esac
+    done
+}
+
 list_secret_key_fingerprints() {
-    gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '$1 == "fpr" { print $10 }'
+    gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '$1 == "fpr" { print $10 }' | filter_valid_gpg_fingerprints
 }
 
 list_public_key_fingerprints() {
-    gpg --list-keys --with-colons 2>/dev/null | awk -F: '$1 == "fpr" { print $10 }'
+    gpg --list-keys --with-colons 2>/dev/null | awk -F: '$1 == "fpr" { print $10 }' | filter_valid_gpg_fingerprints
 }
 
 count_secret_key_fingerprints() {
@@ -847,7 +2261,7 @@ describe_local_gnupg_state() {
 extract_key_fingerprints_from_file() {
     local key_file="$1"
     [ -f "${key_file}" ] || return 0
-    gpg --show-keys --with-colons "${key_file}" 2>/dev/null | awk -F: '$1 == "fpr" { print $10 }'
+    gpg --show-keys --with-colons "${key_file}" 2>/dev/null | awk -F: '$1 == "fpr" { print $10 }' | filter_valid_gpg_fingerprints
 }
 
 collect_current_key_bundle() {
@@ -964,6 +2378,27 @@ find_existing_veracrypt_mount() {
     '
 }
 
+emit_command_log_file() {
+    local level="$1"
+    local prefix="$2"
+    local log_file="$3"
+    local line
+
+    [ -s "${log_file}" ] || return 0
+    while IFS= read -r line; do
+        line="$(sanitize_display_text "${line}")"
+        [ -n "${line}" ] || continue
+        case "${level}" in
+            warn)
+                warn "${prefix}${line}"
+                ;;
+            *)
+                log "${prefix}${line}"
+                ;;
+        esac
+    done < "${log_file}"
+}
+
 direct_mount_veracrypt() {
     local volume_path="$1"
     local requested_mount="$2"
@@ -972,30 +2407,36 @@ direct_mount_veracrypt() {
     local attempt_label="${5:-standard mount}"
     local log_file
     local exit_code=0
+    VERACRYPT_LAST_FAILURE_REASON=""
     log_file="$(mktemp)"
 
     log "Attempting VeraCrypt ${attempt_label} for ${volume_path} at ${requested_mount}..."
     log "Waiting for VeraCrypt to respond. Timeout: ${VERACRYPT_TIMEOUT_SECONDS}s."
 
-    if veracrypt_with_password "${password}" --mount "${volume_path}" "${requested_mount}" \
+    veracrypt_with_password "${password}" --mount "${volume_path}" "${requested_mount}" \
         --pim 0 \
         --keyfiles "" \
         --protect-hidden no \
-        --mount-options "${mount_options}" >"${log_file}" 2>&1; then
+        --mount-options "${mount_options}" >"${log_file}" 2>&1
+    exit_code=$?
+    if [ "${exit_code}" -eq 0 ]; then
         rm -f "${log_file}"
         return 0
     fi
-    exit_code=$?
 
     if [ "${exit_code}" -eq 124 ]; then
+        VERACRYPT_LAST_FAILURE_REASON="timeout"
         warn "VeraCrypt ${attempt_label} timed out after ${VERACRYPT_TIMEOUT_SECONDS}s."
     else
+        if grep -Eiq 'wrong password|incorrect password|password incorrect' "${log_file}" 2>/dev/null; then
+            VERACRYPT_LAST_FAILURE_REASON="wrong-password"
+        else
+            VERACRYPT_LAST_FAILURE_REASON="mount-failed"
+        fi
         warn "VeraCrypt ${attempt_label} failed with exit code ${exit_code}."
     fi
 
-    if [ -s "${log_file}" ]; then
-        cat "${log_file}" >&2
-    fi
+    emit_command_log_file "warn" "VeraCrypt: " "${log_file}"
     rm -f "${log_file}"
     return 1
 }
@@ -1008,17 +2449,16 @@ mount_veracrypt_rw() {
     local exit_code=0
     log_file="$(mktemp)"
 
-    if veracrypt_with_password "${password}" --mount "${volume_path}" "${mount_point}" \
+    veracrypt_with_password "${password}" --mount "${volume_path}" "${mount_point}" \
         --pim 0 \
         --keyfiles "" \
-        --protect-hidden no >"${log_file}" 2>&1; then
+        --protect-hidden no >"${log_file}" 2>&1
+    exit_code=$?
+    if [ "${exit_code}" -eq 0 ]; then
         rm -f "${log_file}"
         return 0
     fi
-    exit_code=$?
-    if [ -s "${log_file}" ]; then
-        cat "${log_file}" >&2
-    fi
+    emit_command_log_file "warn" "VeraCrypt: " "${log_file}"
     rm -f "${log_file}"
     return "${exit_code}"
 }
@@ -1054,6 +2494,7 @@ cleanup_mount_dir_if_safe() {
     local mount_dir="$1"
     local attempt=1
     [ -n "${mount_dir}" ] || return 0
+    require_managed_temp_path "${mount_dir}"
 
     while [ "${attempt}" -le 3 ]; do
         if ! path_is_mounted "${mount_dir}"; then
@@ -1121,17 +2562,62 @@ restore_veracrypt_headers_if_needed() {
     log "Waiting for VeraCrypt to restore headers. Timeout: ${VERACRYPT_TIMEOUT_SECONDS}s."
     log
 
-    if veracrypt_with_password "${password}" --restore-headers "${volume_path}" --pim 0 --keyfiles ""; then
+    veracrypt_with_password "${password}" --restore-headers "${volume_path}" --pim 0 --keyfiles ""
+    exit_code=$?
+    if [ "${exit_code}" -eq 0 ]; then
+        VERACRYPT_LAST_FAILURE_REASON=""
         return 0
     fi
-    exit_code=$?
 
     if [ "${exit_code}" -eq 124 ]; then
+        VERACRYPT_LAST_FAILURE_REASON="header-restore-timeout"
         warn "VeraCrypt header restore timed out after ${VERACRYPT_TIMEOUT_SECONDS}s."
     else
+        VERACRYPT_LAST_FAILURE_REASON="header-restore-failed"
         warn "VeraCrypt header restore failed with exit code ${exit_code}."
     fi
     return 1
+}
+
+veracrypt_mount_failure_message() {
+    local volume_path="$1"
+    case "${VERACRYPT_LAST_FAILURE_REASON}" in
+        wrong-password)
+            printf '%s' "Failed to mount ${volume_path}. The VeraCrypt password was rejected and nothing under ~/.gnupg was changed. It is safe to retry with the correct password."
+            ;;
+        header-restore-timeout)
+            printf '%s' "Failed to mount ${volume_path}. VeraCrypt header restore timed out, so nothing under ~/.gnupg was changed. It is safe to retry after checking the backup header flow."
+            ;;
+        header-restore-failed)
+            printf '%s' "Failed to mount ${volume_path}. VeraCrypt could not restore the container header, so nothing under ~/.gnupg was changed. Retry only after verifying the external or embedded header backup."
+            ;;
+        timeout)
+            printf '%s' "Failed to mount ${volume_path}. VeraCrypt timed out before the keys container became readable. Nothing under ~/.gnupg was changed, and retry is safe."
+            ;;
+        *)
+            printf '%s' "Failed to mount ${volume_path}. Nothing under ~/.gnupg was changed. Verify the container, password, and header backups before retrying."
+            ;;
+    esac
+}
+
+veracrypt_retry_prompt_body() {
+    case "${VERACRYPT_LAST_FAILURE_REASON}" in
+        wrong-password)
+            printf '%s' "The VeraCrypt volume password was rejected. Retry entering the keys container password?"
+            ;;
+        header-restore-timeout)
+            printf '%s' "VeraCrypt timed out while restoring the keys container header. Retry the recovery flow?"
+            ;;
+        header-restore-failed)
+            printf '%s' "VeraCrypt could not restore the keys container header. Retry after checking the backup header flow?"
+            ;;
+        timeout)
+            printf '%s' "VeraCrypt timed out while opening the keys container. Retry the mount?"
+            ;;
+        *)
+            printf '%s' "Retry opening the VeraCrypt keys container?"
+            ;;
+    esac
 }
 
 mount_or_reuse_veracrypt_volume() {
@@ -1142,8 +2628,13 @@ mount_or_reuse_veracrypt_volume() {
 
     existing_mount="$(find_existing_veracrypt_mount "${volume_path}" || true)"
     if [ -n "${existing_mount}" ]; then
-        read -r -p "The keys container is already mounted at ${existing_mount}. [c]ontinue with it or [r]emount? [c]: " choice
-        choice="${choice:-c}"
+        choice="$(menu_prompt \
+            "Mounted Keys Container" \
+            "The keys container is already mounted at ${existing_mount}. Choose how to continue." \
+            0 \
+            "c|c|Continue with existing mount" \
+            "r|r|Dismount and remount" \
+        )"
 
         if [ "${choice}" = "r" ] || [ "${choice}" = "R" ]; then
             veracrypt --text --dismount "${existing_mount}" >/dev/null 2>&1 || fail "Failed to dismount ${existing_mount}"
@@ -1179,7 +2670,8 @@ mount_or_reuse_veracrypt_volume() {
             fi
         fi
 
-        fail "Failed to mount ${volume_path}."
+        [ -n "${VERACRYPT_LAST_FAILURE_REASON}" ] || VERACRYPT_LAST_FAILURE_REASON="mount-failed"
+        return 1
     fi
 }
 
@@ -1221,6 +2713,7 @@ generate_syncpss_gpg_key() {
     local generated_fingerprint
     generated_fingerprint="$(list_secret_key_fingerprints | tail -n 1 | tr -d '\r')"
     [ -n "${generated_fingerprint}" ] || fail "GPG key generation completed, but no secret key fingerprint was detected."
+    validate_gpg_key_id "${generated_fingerprint}" || fail "Generated GPG fingerprint is invalid: ${generated_fingerprint}"
 
     gpg --batch --quick-add-key "${generated_fingerprint}" rsa4096 encrypt 0
     printf '%s' "${generated_fingerprint}"
@@ -1231,6 +2724,7 @@ ensure_gpg_key_id() {
 
     preferred_key="$(store_gpg_id || true)"
     if [ -n "${preferred_key}" ] && local_has_public_key "${preferred_key}"; then
+        validate_gpg_key_id "${preferred_key}" || fail "Password-store .gpg-id contains an invalid key id: ${preferred_key}"
         info "Using the existing password-store GPG recipient from .gpg-id: ${preferred_key}"
         printf '%s' "${preferred_key}"
         return 0
@@ -1238,6 +2732,7 @@ ensure_gpg_key_id() {
 
     runtime_key="$(runtime_config_string_field "key_id" || true)"
     if [ -n "${runtime_key}" ] && local_has_public_key "${runtime_key}"; then
+        validate_gpg_key_id "${runtime_key}" || fail "Runtime config contains an invalid GPG key id: ${runtime_key}"
         info "Using the saved syncpss GPG key from runtime config: ${runtime_key}"
         printf '%s' "${runtime_key}"
         return 0
@@ -1248,6 +2743,7 @@ ensure_gpg_key_id() {
         public_fingerprints="$(list_public_key_fingerprints || true)"
         if [ -n "${public_fingerprints}" ]; then
             preferred_key="$(printf '%s\n' "${public_fingerprints}" | sed -n '1p')"
+            validate_gpg_key_id "${preferred_key}" || fail "Detected local GPG public key id is invalid: ${preferred_key}"
             info "Using the first available local GPG public key for pass initialization: ${preferred_key}"
             printf '%s' "${preferred_key}"
             return 0
@@ -1260,11 +2756,13 @@ ensure_gpg_key_id() {
     fi
 
     preferred_key="$(printf '%s\n' "${fingerprints}" | sed -n '1p')"
+    validate_gpg_key_id "${preferred_key}" || fail "Detected local GPG secret key id is invalid: ${preferred_key}"
     info "Using the first available local GPG secret key: ${preferred_key}"
     printf '%s' "${preferred_key}"
 }
 
 repo_exists() {
+    validate_repo_target "$1" || fail "Invalid GitHub repo target: $1"
     gh repo view "$1" >/dev/null 2>&1
 }
 
@@ -1272,6 +2770,10 @@ resolve_private_repo_target() {
     local github_user="$1"
     local requested_repo_name="$2"
     local candidate="${github_user}/${requested_repo_name}"
+
+    validate_github_username "${github_user}" || fail "Invalid GitHub username returned by GitHub CLI: ${github_user}"
+    validate_github_repo_name "${requested_repo_name}" || fail "Invalid private repo name: ${requested_repo_name}"
+    validate_repo_target "${candidate}" || fail "Invalid private repo target: ${candidate}"
 
     if repo_exists "${candidate}"; then
         printf '%s' "${candidate}"
@@ -1293,8 +2795,10 @@ backup_existing_store_dir() {
     fi
 
     local backup_dir
+    require_managed_runtime_path "${STORE_DIR}"
     ensure_runtime_dir_ownership
     backup_dir="${STORE_BACKUPS_DIR}/password-store.$(date +%Y%m%dT%H%M%S)"
+    require_managed_runtime_path "${backup_dir}"
     log "Backing up existing local password store to ${backup_dir}"
     mv "${STORE_DIR}" "${backup_dir}"
     prune_old_store_backups
@@ -1302,6 +2806,8 @@ backup_existing_store_dir() {
 
 clone_remote_store_directly() {
     local github_repo="$1"
+    validate_repo_target "${github_repo}" || fail "Invalid GitHub repo target: ${github_repo}"
+    require_managed_runtime_path "${STORE_DIR}"
     info "Cloning remote password store directly into ${STORE_DIR}..."
     git clone --quiet "git@github.com:${github_repo}.git" "${STORE_DIR}"
 }
@@ -1315,6 +2821,7 @@ git_current_branch_or_default() {
 ensure_store_repo_remote() {
     local github_repo="$1"
     local remote_url="git@github.com:${github_repo}.git"
+    validate_repo_target "${github_repo}" || fail "Invalid GitHub repo target: ${github_repo}"
 
     if git -C "${STORE_DIR}" remote get-url origin >/dev/null 2>&1; then
         git -C "${STORE_DIR}" remote set-url origin "${remote_url}"
@@ -1368,11 +2875,16 @@ show_store_conflict_preview() {
 prompt_store_conflict_mode() {
     local choice
     while true; do
-        read -r -p "Password-store conflict mode ([k]eep local / [i]ntegrate remote) [k]: " choice
-        choice="${choice:-k}"
+        choice="$(menu_prompt \
+            "Password-Store Conflict" \
+            "Choose how syncpss should handle the password-store conflict." \
+            0 \
+            "k|keep-local|Keep local store" \
+            "i|integrate-remote|Integrate remote store" \
+        )"
         case "${choice}" in
-            k|K) printf 'keep-local'; return 0 ;;
-            i|I) printf 'integrate-remote'; return 0 ;;
+            k|K|keep-local) printf 'keep-local'; return 0 ;;
+            i|I|integrate-remote) printf 'integrate-remote'; return 0 ;;
         esac
     done
 }
@@ -1397,7 +2909,7 @@ backup_current_gnupg_if_requested() {
     local answer backup_dir
     [ -d "${local_gnupg}" ] || return 0
 
-    answer="$(prompt_value "Back up the current ~/.gnupg into ${GNUPG_BACKUPS_DIR}? [Y/n]" "Y")"
+    answer="$(yes_no_prompt "GPG Backup" "Back up the current ~/.gnupg into ${GNUPG_BACKUPS_DIR}?" "Y")"
     if ! answer_is_yes "${answer}"; then
         return 0
     fi
@@ -1449,8 +2961,39 @@ installation_exists_system_config() {
 runtime_config_string_field() {
     local field_name="$1"
     local config_path="${RUNTIME_DIR}/config.json"
+    local parser value
     [ -f "${config_path}" ] || return 1
-    sed -n "s/.*\"${field_name}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "${config_path}" | head -n 1
+    parser="$(json_parser_command)" || fail "Need python3 or python to parse runtime config safely."
+    value="$("${parser}" - "${config_path}" "${field_name}" <<'PY'
+import json
+import pathlib
+import sys
+
+config_path = pathlib.Path(sys.argv[1])
+field_name = sys.argv[2]
+
+try:
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+stack = [payload]
+while stack:
+    current = stack.pop()
+    if isinstance(current, dict):
+        value = current.get(field_name)
+        if isinstance(value, str):
+            sys.stdout.write(value)
+            sys.exit(0)
+        stack.extend(reversed(list(current.values())))
+    elif isinstance(current, list):
+        stack.extend(reversed(current))
+
+sys.exit(1)
+PY
+)" || return 1
+    syncpss_is_single_line_safe "${value}" || return 1
+    printf '%s' "${value}"
 }
 
 installation_alias_matches_binary() {
@@ -1539,44 +3082,72 @@ select_install_action() {
     shift || true
     local issues=("$@")
     local choice
+    local tui_active=0
+
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ] && [ "${INSTALLER_TUI_ACTIVE}" -eq 1 ]; then
+        tui_active=1
+    fi
 
     case "${status}" in
         healthy)
-            printf '%s\n' "Detected a healthy syncpss installation." >&2
+            if [ "${tui_active}" -ne 1 ]; then
+                printf '%s\n' "Detected a healthy syncpss installation." >&2
+            fi
             while true; do
-                read -r -p "Choose [r]einstall/update, [u]ninstall, or [c]ancel [r]: " choice
-                choice="${choice:-r}"
+                choice="$(menu_prompt \
+                    "Existing Installation" \
+                    "Detected a healthy syncpss installation. Choose what to do next." \
+                    0 \
+                    "r|reinstall|Reinstall or update" \
+                    "u|uninstall|Uninstall" \
+                    "c|cancel|Cancel" \
+                )"
                 case "${choice}" in
-                    r|R) printf 'reinstall'; return 0 ;;
-                    u|U) printf 'uninstall'; return 0 ;;
-                    c|C) printf 'cancel'; return 0 ;;
+                    r|R|reinstall) printf 'reinstall'; return 0 ;;
+                    u|U|uninstall) printf 'uninstall'; return 0 ;;
+                    c|C|cancel) printf 'cancel'; return 0 ;;
                 esac
             done
             ;;
         broken)
-            printf '%s\n' "Detected an incomplete or unhealthy syncpss installation." >&2
-            for issue in "${issues[@]}"; do
-                [ -n "${issue}" ] || continue
-                printf '  - %s\n' "${issue}" >&2
-            done
+            if [ "${tui_active}" -ne 1 ]; then
+                printf '%s\n' "Detected an incomplete or unhealthy syncpss installation." >&2
+                for issue in "${issues[@]}"; do
+                    [ -n "${issue}" ] || continue
+                    printf '  - %s\n' "${issue}" >&2
+                done
+            fi
             while true; do
-                read -r -p "Choose [r]epair, [u]ninstall, or [c]ancel [r]: " choice
-                choice="${choice:-r}"
+                choice="$(menu_prompt \
+                    "Broken Installation" \
+                    "Detected an incomplete or unhealthy syncpss installation. Choose what to do next." \
+                    0 \
+                    "r|repair|Repair installation" \
+                    "u|uninstall|Uninstall" \
+                    "c|cancel|Cancel" \
+                )"
                 case "${choice}" in
-                    r|R) printf 'repair'; return 0 ;;
-                    u|U) printf 'uninstall'; return 0 ;;
-                    c|C) printf 'cancel'; return 0 ;;
+                    r|R|repair) printf 'repair'; return 0 ;;
+                    u|U|uninstall) printf 'uninstall'; return 0 ;;
+                    c|C|cancel) printf 'cancel'; return 0 ;;
                 esac
             done
             ;;
         missing)
-            printf '%s\n' "Detected no existing syncpss installation." >&2
+            if [ "${tui_active}" -ne 1 ]; then
+                printf '%s\n' "Detected no existing syncpss installation." >&2
+            fi
             while true; do
-                read -r -p "Choose [i]nstall or [c]ancel [i]: " choice
-                choice="${choice:-i}"
+                choice="$(menu_prompt \
+                    "Install syncpss" \
+                    "No existing syncpss installation was found. Choose what to do next." \
+                    0 \
+                    "i|install|Install syncpss" \
+                    "c|cancel|Cancel" \
+                )"
                 case "${choice}" in
-                    i|I) printf 'install'; return 0 ;;
-                    c|C) printf 'cancel'; return 0 ;;
+                    i|I|install) printf 'install'; return 0 ;;
+                    c|C|cancel) printf 'cancel'; return 0 ;;
                 esac
             done
             ;;
@@ -1643,7 +3214,11 @@ ensure_store_clone_or_init() {
                 info "Auto-accepting clone of the existing private password store into ${STORE_DIR}."
                 clone_answer="Y"
             else
-                clone_answer="$(prompt_value "Clone your existing private password store into ${STORE_DIR} now? [Y/n]" "Y")"
+                clone_answer="$(yes_no_prompt \
+                    "Clone Private Store" \
+                    "Clone your existing private password store into ${STORE_DIR} now?" \
+                    "Y" \
+                )"
             fi
             if ! answer_is_yes "${clone_answer}"; then
                 fail "A remote password store exists, and no local ${STORE_DIR} is present. Clone is required to continue."
@@ -1673,7 +3248,11 @@ ensure_store_clone_or_init() {
             info "Auto-accepting fetch and reconcile for the existing private password store."
             clone_answer="Y"
         else
-            clone_answer="$(prompt_value "Fetch and reconcile your private password store now? [Y/n]" "Y")"
+            clone_answer="$(yes_no_prompt \
+                "Reconcile Private Store" \
+                "Fetch and reconcile your private password store now?" \
+                "Y" \
+            )"
         fi
         if ! answer_is_yes "${clone_answer}"; then
             log "Keeping the current local git-backed password store and skipping remote reconciliation."
@@ -2134,14 +3713,20 @@ restore_gpg_from_remote_keys() {
     [ -f "${remote_keys}" ] || fail "Remote keys container was not found at ${remote_keys}"
     command_exists veracrypt || fail "veracrypt is required to restore encrypted GPG keys"
 
-    local mode password mount_point requested_mount raw_dir mount_result mount_mode mounted_here cleanup_mount_dir expected_gpg_id local_gnupg_summary
+    local mode password mount_point requested_mount raw_dir mount_result mount_mode mounted_here cleanup_mount_dir expected_gpg_id local_gnupg_summary retry_answer
     section "Encrypted remote GPG keys"
     info "Found a VeraCrypt keys container at ${remote_keys}."
     local_gnupg_summary="$(describe_local_gnupg_state)"
     info "${local_gnupg_summary}"
     info "Choose how syncpss should apply those remote GPG keys to this Linux profile."
-    read -r -p "GPG key restore mode ([m]erge / [r]eplace / [l]eave as is) [r]: " mode
-    mode="${mode:-r}"
+    mode="$(menu_prompt \
+        "GPG Key Restore" \
+        "Choose how syncpss should apply the remote GPG keys to this Linux profile." \
+        1 \
+        "m|m|Merge with current ~/.gnupg" \
+        "r|r|Replace current ~/.gnupg" \
+        "l|l|Leave current ~/.gnupg as is" \
+    )"
     if [ "${mode}" = "l" ] || [ "${mode}" = "L" ]; then
         log "Leaving the current ~/.gnupg unchanged."
         return
@@ -2149,11 +3734,26 @@ restore_gpg_from_remote_keys() {
 
     backup_current_gnupg_if_requested
 
-    password="$(prompt_secret 'VeraCrypt container password')"
-    [ -n "${password}" ] || fail "A VeraCrypt password is required to restore GPG keys"
+    while true; do
+        password="$(prompt_secret 'VeraCrypt container password')"
+        [ -n "${password}" ] || fail "A VeraCrypt password is required to restore GPG keys"
 
-    requested_mount="$(mktemp -d)"
-    mount_result="$(mount_or_reuse_veracrypt_volume "${remote_keys}" "${requested_mount}" "${password}")"
+        requested_mount="$(mktemp -d)"
+        if mount_result="$(mount_or_reuse_veracrypt_volume "${remote_keys}" "${requested_mount}" "${password}")"; then
+            break
+        fi
+
+        cleanup_mount_dir_if_safe "${requested_mount}" || true
+        if [ ! -t 0 ] || [ ! -t 1 ]; then
+            fail "$(veracrypt_mount_failure_message "${remote_keys}")"
+        fi
+
+        retry_answer="$(yes_no_prompt "VeraCrypt Retry" "$(veracrypt_retry_prompt_body)" "Y" || true)"
+        if ! answer_is_yes "${retry_answer}"; then
+            fail "$(veracrypt_mount_failure_message "${remote_keys}")"
+        fi
+    done
+
     mount_mode="${mount_result%%	*}"
     mount_point="${mount_result#*	}"
     mounted_here=1
@@ -2274,18 +3874,18 @@ ensure_store_first_push() {
     version="$(next_store_version)"
     write_store_hash "${version}"
 
-    git -C "${STORE_DIR}" add README.md manifest.xml .gpg-id "${STORE_HASH_FILE}"
+    run_logged_command "Staging private password-store files" git -C "${STORE_DIR}" add README.md manifest.xml .gpg-id "${STORE_HASH_FILE}"
     if [ -f "${STORE_DIR}/keys" ]; then
-        git -C "${STORE_DIR}" add keys
+        run_logged_command "Staging encrypted keys container" git -C "${STORE_DIR}" add keys
     fi
     if [ -n "$(git -C "${STORE_DIR}" status --short)" ]; then
-        git -C "${STORE_DIR}" commit -m "Initialize pass-store"
+        run_logged_command "Creating initial private password-store commit" git -C "${STORE_DIR}" commit -m "Initialize pass-store"
     fi
 
     ensure_store_remote "${github_repo}"
-    git -C "${STORE_DIR}" push -u origin "${BRANCH}"
-    git -C "${STORE_DIR}" tag -a "v${version}" -m "pass-store v${version}"
-    git -C "${STORE_DIR}" push origin "v${version}"
+    run_logged_command "Pushing private password-store branch to GitHub" git -C "${STORE_DIR}" push -u origin "${BRANCH}"
+    run_logged_command "Creating private password-store bootstrap tag" git -C "${STORE_DIR}" tag -a "v${version}" -m "pass-store v${version}"
+    run_logged_command "Publishing private password-store bootstrap tag" git -C "${STORE_DIR}" push origin "v${version}"
     success "Private password-store bootstrap complete."
 }
 
@@ -2311,10 +3911,47 @@ sha_check() {
     fail "No SHA-256 checker found."
 }
 
+json_parser_command() {
+    if command_exists python3; then
+        printf '%s' "python3"
+        return 0
+    fi
+    if command_exists python; then
+        printf '%s' "python"
+        return 0
+    fi
+    return 1
+}
+
 json_field_value() {
     local json_content="$1"
     local field_name="$2"
-    printf '%s' "${json_content}" | tr '\n' ' ' | sed -n "s/.*\"${field_name}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n1
+    local parser
+    parser="$(json_parser_command)" || fail "Need python3 or python to parse installer JSON responses safely."
+    printf '%s' "${json_content}" | "${parser}" - "${field_name}" <<'PY'
+import json
+import sys
+
+field_name = sys.argv[1]
+try:
+    payload = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(1)
+
+stack = [payload]
+while stack:
+    current = stack.pop()
+    if isinstance(current, dict):
+        value = current.get(field_name)
+        if isinstance(value, str):
+            sys.stdout.write(value)
+            sys.exit(0)
+        stack.extend(reversed(list(current.values())))
+    elif isinstance(current, list):
+        stack.extend(reversed(current))
+
+sys.exit(1)
+PY
 }
 
 selected_release_api_endpoint() {
@@ -2328,7 +3965,7 @@ selected_release_api_endpoint() {
 selected_release_json() {
     local attempts=5
     local attempt=1
-    local endpoint json_response
+    local endpoint json_response release_tag
 
     endpoint="$(selected_release_api_endpoint)"
 
@@ -2336,7 +3973,8 @@ selected_release_json() {
         json_response="$(curl -fsSL --retry 3 --retry-delay 1 \
             -H 'Accept: application/vnd.github+json' \
             "${endpoint}" 2>/dev/null || true)"
-        if [ -n "${json_response}" ] && [ -n "$(json_field_value "${json_response}" "tag_name")" ]; then
+        release_tag="$(json_field_value "${json_response}" "tag_name" || true)"
+        if [ -n "${json_response}" ] && [ -n "${release_tag}" ] && syncpss_is_single_line_safe "${release_tag}"; then
             printf '%s' "${json_response}"
             return 0
         fi
@@ -2441,6 +4079,8 @@ download_release_assets_from_github() {
             "${TMP_DIR}/${SYNCPS_SHA_ASSET}" \
             "${TMP_DIR}/${MANIFEST_ASSET}" \
             "${TMP_DIR}/${MANIFEST_SHA_ASSET}" \
+            "${TMP_DIR}/${MANAGED_PATHS_ASSET}" \
+            "${TMP_DIR}/${MANAGED_PATHS_SHA_ASSET}" \
             "${TMP_DIR}/${UNINSTALL_ASSET}" \
             "${TMP_DIR}/${UNINSTALL_SHA_ASSET}" \
             "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}"
@@ -2452,6 +4092,8 @@ download_release_assets_from_github() {
             download_release_asset "${release_tag}" "${SYNCPS_SHA_ASSET}" "${TMP_DIR}/${SYNCPS_SHA_ASSET}" && \
             download_release_asset "${release_tag}" "${MANIFEST_ASSET}" "${TMP_DIR}/${MANIFEST_ASSET}" && \
             download_release_asset "${release_tag}" "${MANIFEST_SHA_ASSET}" "${TMP_DIR}/${MANIFEST_SHA_ASSET}" && \
+            download_release_asset "${release_tag}" "${MANAGED_PATHS_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_ASSET}" && \
+            download_release_asset "${release_tag}" "${MANAGED_PATHS_SHA_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_SHA_ASSET}" && \
             download_release_asset "${release_tag}" "${UNINSTALL_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}" && \
             download_release_asset "${release_tag}" "${UNINSTALL_SHA_ASSET}" "${TMP_DIR}/${UNINSTALL_SHA_ASSET}" && \
             download_release_asset "${release_tag}" "${MASTER_FINGERPRINT_ASSET}" "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}"; then
@@ -2503,6 +4145,7 @@ compute_repo_master_fingerprint() {
         "${repo_root}/bin/${SYNCPS_ASSET}" \
         "${repo_root}/bin/${INSTALL_ASSET}" \
         "${repo_root}/bin/installer.sh" \
+        "${repo_root}/bin/${MANAGED_PATHS_ASSET}" \
         "${repo_root}/bin/uninstall_syncpss.sh" > "${temp_payload}"
 
     sha256sum "${temp_payload}" | awk '{print $1}'
@@ -2543,6 +4186,12 @@ stage_local_dev_install_assets() {
     cp -f "${repo_root}/bin/install.sha256" "${TMP_DIR}/install.sha256"
     cp -f "${repo_root}/bin/${SYNCPS_ASSET}" "${TMP_DIR}/${SYNCPS_ASSET}"
     cp -f "${repo_root}/bin/${SYNCPS_SHA_ASSET}" "${TMP_DIR}/${SYNCPS_SHA_ASSET}"
+    cp -f "${repo_root}/bin/installer.sh" "${TMP_DIR}/installer.sh"
+    cp -f "${repo_root}/bin/installer.sh.sha256" "${TMP_DIR}/installer.sh.sha256"
+    cp -f "${repo_root}/bin/${MANIFEST_ASSET}" "${TMP_DIR}/${MANIFEST_ASSET}"
+    cp -f "${repo_root}/bin/${MANIFEST_SHA_ASSET}" "${TMP_DIR}/${MANIFEST_SHA_ASSET}"
+    cp -f "${repo_root}/bin/${MANAGED_PATHS_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_ASSET}"
+    cp -f "${repo_root}/bin/${MANAGED_PATHS_SHA_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_SHA_ASSET}"
     cp -f "${repo_root}/bin/${UNINSTALL_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}"
     cp -f "${repo_root}/bin/${UNINSTALL_SHA_ASSET}" "${TMP_DIR}/${UNINSTALL_SHA_ASSET}"
     cp -f "${repo_root}/bin/${MASTER_FINGERPRINT_ASSET}" "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}"
@@ -2550,9 +4199,12 @@ stage_local_dev_install_assets() {
         cd "${TMP_DIR}"
         sha_check "install" "install.sha256"
         sha_check "${SYNCPS_ASSET}" "${SYNCPS_SHA_ASSET}"
+        sha_check "installer.sh" "installer.sh.sha256"
+        sha_check "${MANIFEST_ASSET}" "${MANIFEST_SHA_ASSET}"
+        sha_check "${MANAGED_PATHS_ASSET}" "${MANAGED_PATHS_SHA_ASSET}"
         sha_check "${UNINSTALL_ASSET}" "${UNINSTALL_SHA_ASSET}"
     ) || fail "Checksum verification failed for locally built development assets"
-    chmod 755 "${TMP_DIR}/install" "${TMP_DIR}/${SYNCPS_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}"
+    chmod 755 "${TMP_DIR}/install" "${TMP_DIR}/${SYNCPS_ASSET}" "${TMP_DIR}/installer.sh" "${TMP_DIR}/${MANAGED_PATHS_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}"
 }
 
 local_install_assets_available() {
@@ -2560,8 +4212,12 @@ local_install_assets_available() {
     [ -f "${SCRIPT_DIR}/${INSTALL_SHA_ASSET}" ] && \
     [ -f "${SCRIPT_DIR}/${SYNCPS_ASSET}" ] && \
     [ -f "${SCRIPT_DIR}/${SYNCPS_SHA_ASSET}" ] && \
+    [ -f "${SCRIPT_DIR}/installer.sh" ] && \
+    [ -f "${SCRIPT_DIR}/installer.sh.sha256" ] && \
     [ -f "${SCRIPT_DIR}/${MANIFEST_ASSET}" ] && \
     [ -f "${SCRIPT_DIR}/${MANIFEST_SHA_ASSET}" ] && \
+    [ -f "${SCRIPT_DIR}/${MANAGED_PATHS_ASSET}" ] && \
+    [ -f "${SCRIPT_DIR}/${MANAGED_PATHS_SHA_ASSET}" ] && \
     [ -f "${SCRIPT_DIR}/${UNINSTALL_ASSET}" ] && \
     [ -f "${SCRIPT_DIR}/${UNINSTALL_SHA_ASSET}" ] && \
     [ -f "${SCRIPT_DIR}/${MASTER_FINGERPRINT_ASSET}" ]
@@ -2589,19 +4245,17 @@ select_install_asset_source() {
             fail "SYNCPSS_INSTALL_SOURCE=github was requested, but no published GitHub release was found."
             ;;
         ""|auto|AUTO)
+            if [ -n "${latest_tag}" ]; then
+                printf '%s\n' "Using GitHub release ${latest_tag} by default." >&2
+                printf 'github'
+                return 0
+            fi
+            fail "No published GitHub release was found. For local development builds, rerun with --local."
             ;;
         *)
             fail "Unsupported SYNCPSS_INSTALL_SOURCE value: ${forced_source}"
             ;;
     esac
-
-    if [ -n "${latest_tag}" ]; then
-        printf '%s\n' "Found latest GitHub release: ${latest_tag}" >&2
-        printf 'github'
-        return 0
-    fi
-
-    fail "No published GitHub release was found. For maintainer-only local testing, rerun with SYNCPSS_INSTALL_SOURCE=local."
 }
 
 download_install_binary() {
@@ -2622,8 +4276,12 @@ download_install_binary() {
         cp -f "${SCRIPT_DIR}/${INSTALL_SHA_ASSET}" "${TMP_DIR}/install.sha256"
         cp -f "${SCRIPT_DIR}/${SYNCPS_ASSET}" "${TMP_DIR}/${SYNCPS_ASSET}"
         cp -f "${SCRIPT_DIR}/${SYNCPS_SHA_ASSET}" "${TMP_DIR}/${SYNCPS_SHA_ASSET}"
+        cp -f "${SCRIPT_DIR}/installer.sh" "${TMP_DIR}/installer.sh"
+        cp -f "${SCRIPT_DIR}/installer.sh.sha256" "${TMP_DIR}/installer.sh.sha256"
         cp -f "${SCRIPT_DIR}/${MANIFEST_ASSET}" "${TMP_DIR}/${MANIFEST_ASSET}"
         cp -f "${SCRIPT_DIR}/${MANIFEST_SHA_ASSET}" "${TMP_DIR}/${MANIFEST_SHA_ASSET}"
+        cp -f "${SCRIPT_DIR}/${MANAGED_PATHS_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_ASSET}"
+        cp -f "${SCRIPT_DIR}/${MANAGED_PATHS_SHA_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_SHA_ASSET}"
         cp -f "${SCRIPT_DIR}/${UNINSTALL_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}"
         cp -f "${SCRIPT_DIR}/${UNINSTALL_SHA_ASSET}" "${TMP_DIR}/${UNINSTALL_SHA_ASSET}"
         cp -f "${SCRIPT_DIR}/${MASTER_FINGERPRINT_ASSET}" "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}"
@@ -2631,10 +4289,12 @@ download_install_binary() {
             cd "${TMP_DIR}"
             sha_check "install" "install.sha256"
             sha_check "${SYNCPS_ASSET}" "${SYNCPS_SHA_ASSET}"
+            sha_check "installer.sh" "installer.sh.sha256"
             sha_check "${MANIFEST_ASSET}" "${MANIFEST_SHA_ASSET}"
+            sha_check "${MANAGED_PATHS_ASSET}" "${MANAGED_PATHS_SHA_ASSET}"
             sha_check "${UNINSTALL_ASSET}" "${UNINSTALL_SHA_ASSET}"
         ) || fail "Checksum verification failed for locally staged install assets"
-        chmod 755 "${TMP_DIR}/install" "${TMP_DIR}/${SYNCPS_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}"
+        chmod 755 "${TMP_DIR}/install" "${TMP_DIR}/${SYNCPS_ASSET}" "${TMP_DIR}/installer.sh" "${TMP_DIR}/${MANAGED_PATHS_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}"
         return
     fi
 
@@ -2643,19 +4303,25 @@ download_install_binary() {
         run_with_spinner "Downloading release install assets" \
             download_release_assets_from_github "${latest_tag}" || \
             fail "Failed to download install assets from the selected GitHub release."
+        download_release_asset "${latest_tag}" "installer.sh" "${TMP_DIR}/installer.sh" || \
+            fail "Failed to download installer.sh from the selected GitHub release."
+        download_release_asset "${latest_tag}" "installer.sh.sha256" "${TMP_DIR}/installer.sh.sha256" || \
+            fail "Failed to download installer.sh.sha256 from the selected GitHub release."
 
         (
             cd "${TMP_DIR}"
             sha_check "install" "install.sha256"
             sha_check "${SYNCPS_ASSET}" "${SYNCPS_SHA_ASSET}"
+            sha_check "installer.sh" "installer.sh.sha256"
             sha_check "${MANIFEST_ASSET}" "${MANIFEST_SHA_ASSET}"
+            sha_check "${MANAGED_PATHS_ASSET}" "${MANAGED_PATHS_SHA_ASSET}"
             sha_check "${UNINSTALL_ASSET}" "${UNINSTALL_SHA_ASSET}"
         ) || fail "Checksum verification failed for downloaded install assets"
         manifest_xml="$(cat "${TMP_DIR}/${MANIFEST_ASSET}")"
         if ! release_manifest_matches_tag "${latest_tag}" "${manifest_xml}"; then
             fail "Downloaded ${MANIFEST_ASSET} does not match the selected release ${latest_tag}."
         fi
-        chmod 755 "${TMP_DIR}/install" "${TMP_DIR}/${SYNCPS_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}"
+        chmod 755 "${TMP_DIR}/install" "${TMP_DIR}/${SYNCPS_ASSET}" "${TMP_DIR}/installer.sh" "${TMP_DIR}/${MANAGED_PATHS_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}"
         return
     fi
 
@@ -2664,13 +4330,233 @@ download_install_binary() {
 
 persist_local_install_verification_assets() {
     ensure_runtime_dir_ownership
+    require_managed_runtime_path "${RUNTIME_CONFIG_DIR}"
+    require_managed_runtime_path "${INSTALL_ASSETS_DIR}"
+    require_managed_temp_path "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}"
+    require_managed_temp_path "${TMP_DIR}/${INSTALL_ASSET}"
+    require_managed_temp_path "${TMP_DIR}/installer.sh"
+    require_managed_temp_path "${TMP_DIR}/${MANIFEST_ASSET}"
+    require_managed_temp_path "${TMP_DIR}/${MANIFEST_SHA_ASSET}"
+    require_managed_temp_path "${TMP_DIR}/${MANAGED_PATHS_ASSET}"
+    require_managed_temp_path "${TMP_DIR}/${UNINSTALL_ASSET}"
     install -m 600 "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}" "${RUNTIME_CONFIG_DIR}/${MASTER_FINGERPRINT_ASSET}"
     install -m 700 "${TMP_DIR}/${INSTALL_ASSET}" "${INSTALL_ASSETS_DIR}/${INSTALL_ASSET}"
-    install -m 700 "${SCRIPT_DIR}/installer.sh" "${INSTALL_ASSETS_DIR}/installer.sh"
+    install -m 700 "${TMP_DIR}/installer.sh" "${INSTALL_ASSETS_DIR}/installer.sh"
     install -m 644 "${TMP_DIR}/${MANIFEST_ASSET}" "${INSTALL_ASSETS_DIR}/${MANIFEST_ASSET}"
     install -m 600 "${TMP_DIR}/${MANIFEST_SHA_ASSET}" "${INSTALL_ASSETS_DIR}/${MANIFEST_SHA_ASSET}"
+    install -m 700 "${TMP_DIR}/${MANAGED_PATHS_ASSET}" "${INSTALL_ASSETS_DIR}/${MANAGED_PATHS_ASSET}"
     install -m 700 "${TMP_DIR}/${UNINSTALL_ASSET}" "${INSTALL_ASSETS_DIR}/${UNINSTALL_ASSET}"
     chown -R "${REAL_USER}:${REAL_GROUP}" "${INSTALL_ASSETS_DIR}" "${RUNTIME_CONFIG_DIR}" 2>/dev/null || true
+}
+
+ensure_installation_health() {
+    local report status message
+    report="$(installation_health_report)"
+    status="$(printf '%s\n' "${report}" | sed -n '1p')"
+
+    case "${status}" in
+        healthy)
+            return 0
+            ;;
+        broken)
+            message="$(printf '%s\n' "${report}" | tail -n +2)"
+            fail "$(printf 'syncpss install did not finish cleanly.\n%s\nSee %s for the full command log.' "${message}" "${INSTALLER_LOG_FILE}")"
+            ;;
+        *)
+            fail "$(printf 'syncpss install did not create the expected files.\nSee %s for the full command log.' "${INSTALLER_LOG_FILE}")"
+            ;;
+    esac
+}
+
+account_setup_selected_repo_name() {
+    local saved_repo_name detected_repo_name
+
+    if [ -n "${INSTALLER_SELECTED_PRIVATE_REPO_NAME}" ]; then
+        printf '%s' "${INSTALLER_SELECTED_PRIVATE_REPO_NAME}"
+        return 0
+    fi
+
+    saved_repo_name="$(load_saved_private_repo_name || true)"
+    detected_repo_name="$(detected_private_repo_name || true)"
+    printf '%s' "${saved_repo_name:-${detected_repo_name:-${DEFAULT_REPO_NAME}}}"
+}
+
+account_setup_wizard_title() {
+    case "${1}" in
+        1) printf 'GitHub Authentication' ;;
+        2) printf 'Git Identity' ;;
+        3) printf 'Private Password-Store Repo' ;;
+        4) printf 'Ready To Continue' ;;
+        *) printf 'Account Setup' ;;
+    esac
+}
+
+account_setup_wizard_body() {
+    local page="$1"
+    local auth_status current_name current_email repo_name github_user repo_target
+
+    if gh_auth_ready; then
+        auth_status="Authenticated with GitHub CLI."
+    else
+        auth_status="Not authenticated yet."
+    fi
+
+    current_name="$(git config --global --get user.name || true)"
+    current_email="$(git config --global --get user.email || true)"
+    repo_name="$(account_setup_selected_repo_name)"
+    github_user=''
+    repo_target="Authenticate GitHub first to preview the exact repo target."
+    if gh_auth_ready; then
+        github_user="$(gh_user_field '.login // ""' 'GitHub login')"
+        if [ -n "${github_user}" ]; then
+            repo_target="${github_user}/${repo_name}"
+        fi
+    fi
+
+    case "${page}" in
+        1)
+            cat <<EOF
+This guided step covers the interactive GitHub setup used by syncpss during installation.
+
+Status: ${auth_status}
+
+Use [a] to run GitHub authentication now. Once auth is complete, move right to review Git identity and your private password-store repo target.
+EOF
+            ;;
+        2)
+            cat <<EOF
+syncpss can use your Git identity for password-store commits.
+
+Current user.name: ${current_name:-<not set>}
+Current user.email: ${current_email:-<not set>}
+
+If values already exist, syncpss now keeps them by default unless you explicitly choose to edit them. Use [e] to review or update the optional values.
+EOF
+            ;;
+        3)
+            cat <<EOF
+Your encrypted passwords live in a separate private GitHub repo that belongs to you.
+
+Selected repo name: ${repo_name}
+Target repo: ${repo_target}
+
+Use [e] to change the private repo name preference before syncpss clones or creates the repo.
+EOF
+            ;;
+        4)
+            cat <<EOF
+Review
+
+GitHub auth: ${auth_status}
+Git user.name: ${current_name:-<not set>}
+Git user.email: ${current_email:-<not set>}
+Private repo name: ${repo_name}
+Target repo: ${repo_target}
+
+Press [Enter] to continue with the installer once the settings above look right.
+EOF
+            ;;
+    esac
+}
+
+account_setup_wizard_footer() {
+    case "${1}" in
+        1)
+            printf '[a] authenticate  [Right/Enter] next  [Esc] cancel'
+            ;;
+        2)
+            printf '[e] edit identity  [Left/Right] navigate  [Esc] cancel'
+            ;;
+        3)
+            printf '[e] change repo  [Left/Right] navigate  [Esc] cancel'
+            ;;
+        4)
+            printf '[Left] previous  [Enter] continue install  [Esc] cancel'
+            ;;
+    esac
+}
+
+configure_private_repo_name_interactive() {
+    local github_user repo_name
+
+    if ! gh_auth_ready; then
+        installer_tui_notice "GitHub Authentication" "Authenticate GitHub first so syncpss can resolve your private repo target."
+        return 1
+    fi
+
+    github_user="$(gh_user_field '.login // ""' 'GitHub login')"
+    repo_name="$(account_setup_selected_repo_name)"
+
+    repo_name="$(prompt_private_repo_name "${repo_name}" "${github_user}")"
+    INSTALLER_SELECTED_PRIVATE_REPO_NAME="${repo_name}"
+    save_saved_private_repo_name "${repo_name}"
+}
+
+run_account_setup_wizard() {
+    local current_page=1
+    local total_pages=4
+    local key title body footer
+
+    if [ "${INSTALLER_TUI_ENABLED}" -ne 1 ] || auto_accept_default_enabled; then
+        ensure_github_auth
+        ensure_git_identity
+        return 0
+    fi
+
+    while true; do
+        title="$(account_setup_wizard_title "${current_page}")"
+        body="$(account_setup_wizard_body "${current_page}")"
+        footer="$(account_setup_wizard_footer "${current_page}")"
+        installer_tui_render "${title}" "${current_page}" "${total_pages}" "${body}" "${footer}"
+        if ! installer_tui_read_key_into key; then
+            key=''
+        fi
+
+        if [ "${key}" = $'\e' ] || [ "${key}" = "q" ] || [ "${key}" = "Q" ]; then
+            installer_tui_leave
+            fail "Installer cancelled."
+        fi
+
+        if installer_tui_key_is_left "${key}"; then
+            if [ "${current_page}" -gt 1 ]; then
+                current_page=$((current_page - 1))
+            fi
+            continue
+        fi
+
+        case "${current_page}:${key}" in
+            1:a|1:A)
+                installer_tui_leave
+                ensure_github_auth
+                installer_tui_enter
+                continue
+                ;;
+            2:e|2:E)
+                ensure_git_identity
+                continue
+                ;;
+            3:e|3:E)
+                configure_private_repo_name_interactive
+                continue
+                ;;
+        esac
+
+        if installer_tui_key_is_right "${key}" || installer_tui_key_is_enter "${key}"; then
+            if [ "${current_page}" -lt "${total_pages}" ]; then
+                current_page=$((current_page + 1))
+                continue
+            fi
+
+            if ! gh_auth_ready; then
+                installer_tui_notice "GitHub Authentication" "Complete GitHub authentication before continuing with installation."
+                continue
+            fi
+
+            INSTALLER_TUI_STATUS_LINE="${INSTALLER_TUI_CURRENT_LABEL}"
+            installer_tui_render_progress_frame
+            return 0
+        fi
+    done
 }
 
 run_install_binary() {
@@ -2680,6 +4566,14 @@ run_install_binary() {
     local gpg_key_id="$4"
     local store_path="${5:-${STORE_DIR}}"
     local branch_name="${6:-${BRANCH}}"
+
+    [ -n "${github_user}" ] && validate_github_username "${github_user}" || true
+    [ -n "${github_email}" ] && syncpss_is_single_line_safe "${github_email}" || fail "GitHub email is invalid."
+    validate_repo_target "${github_repo}" || fail "Invalid GitHub repo target: ${github_repo}"
+    validate_gpg_key_id "${gpg_key_id}" || fail "Invalid GPG key id: ${gpg_key_id}"
+    validate_store_branch "${branch_name}" || fail "Invalid store branch: ${branch_name}"
+    require_managed_runtime_path "${store_path}"
+    require_managed_temp_path "${TMP_DIR}/install"
 
     sudo_run "${TMP_DIR}/install" \
         --github-user "${github_user}" \
@@ -2701,28 +4595,41 @@ main_update() {
     [ -n "${github_repo}" ] || fail "SYNCPSS_UPDATE_GITHUB_REPO is required for update mode"
     [ -n "${gpg_key_id}" ] || fail "SYNCPSS_UPDATE_GPG_KEY_ID is required for update mode"
 
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
+        installer_tui_begin_flow 3 "Preparing runtime directories"
+    fi
+
     section "syncpss release updater"
     info "Updating installed syncpss from the published release channel."
 
     progress_step 1 3 "Preparing runtime directories"
     ensure_runtime_dir_ownership
+    mark_step_result 1 ok
 
     progress_step 2 3 "Fetching verified release assets"
     download_install_binary
+    mark_step_result 2 ok
 
     progress_step 3 3 "Installing the refreshed release and persisting verification assets"
     run_install_binary "${github_user}" "${github_email}" "${github_repo}" "${gpg_key_id}" "${store_path}" "${branch_name}"
     persist_local_install_verification_assets
     ensure_runtime_dir_ownership
     hash -r 2>/dev/null || true
+    ensure_installation_health
+    mark_step_result 3 ok
 
     log
     success "syncpss update complete."
+    installer_finish_summary "success" "${github_repo}"
 }
 
 main_install() {
     local total_steps=6
     local saved_repo_name remote_keys_message repo_target_status
+
+    if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
+        installer_tui_begin_flow "${total_steps}" "Preparing syncpss runtime folders and Linux dependencies"
+    fi
 
     section "syncpss Linux / WSL installer"
     info "Public app repo: ${REPO_OWNER}/${REPO_NAME}"
@@ -2734,23 +4641,24 @@ main_install() {
     install_runtime_dependencies
     install_github_cli
     install_veracrypt
+    mark_step_result 1 ok
 
     progress_step 2 "${total_steps}" "Fetching verified syncpss release assets"
     download_install_binary
+    mark_step_result 2 ok
 
     progress_step 3 "${total_steps}" "Authenticating GitHub and confirming your private password-store target"
-    ensure_github_auth
-    ensure_git_identity
+    run_account_setup_wizard
 
     local github_user default_email repo_name github_repo gpg_key_id git_email detected_repo_name
-    github_user="$(gh api user --jq .login)"
-    default_email="$(gh api user --jq '.email // ""')"
+    github_user="$(gh_user_field '.login // ""' 'GitHub login')"
+    default_email="$(gh_user_field '.email // ""' 'GitHub email')"
     git_email="$(git config --global --get user.email || true)"
     if [ -z "${default_email}" ]; then
         default_email="${git_email}"
     fi
 
-    saved_repo_name="$(load_saved_private_repo_name || true)"
+    saved_repo_name="${INSTALLER_SELECTED_PRIVATE_REPO_NAME:-$(load_saved_private_repo_name || true)}"
     detected_repo_name="$(detected_private_repo_name || true)"
     section "Private password-store setup"
     info "syncpss keeps your encrypted passwords in a separate private GitHub repo that belongs to you."
@@ -2773,10 +4681,12 @@ main_install() {
     fi
     success "Private password-store target: ${github_repo}"
     info "${repo_target_status}"
+    mark_step_result 3 ok
 
     progress_step 4 "${total_steps}" "Authorizing SSH access and preparing your private password-store repo"
     ensure_ssh_key
     ensure_store_clone_or_init "${github_repo}"
+    mark_step_result 4 ok
 
     progress_step 5 "${total_steps}" "Preparing GPG keys and encrypted password-store state"
     if [ -f "${STORE_DIR}/keys" ]; then
@@ -2798,6 +4708,7 @@ main_install() {
     fi
     ensure_pass_initialized "${gpg_key_id}"
     write_store_manifest
+    mark_step_result 5 ok
 
     progress_step 6 "${total_steps}" "Installing syncpss and saving local verification assets"
     ensure_store_first_push "${github_user}" "${github_repo}"
@@ -2805,26 +4716,36 @@ main_install() {
     persist_local_install_verification_assets
     ensure_runtime_dir_ownership
     hash -r 2>/dev/null || true
+    ensure_installation_health
+    mark_step_result 6 ok
 
     log
-    if command_exists syncpss || [ -x /usr/local/bin/syncpss ]; then
+    if command_exists syncpss; then
         success "Success. You can run 'syncpss' or 'syncpass' now."
         info "Saved private repo target: ${github_repo}"
+        installer_finish_summary "success" "${github_repo}"
     else
         log "syncpss was installed, but the current shell did not resolve it on PATH yet."
-        log "Try: sudo /usr/local/bin/syncpss"
+        log "Try: /usr/local/bin/syncpss"
+        installer_finish_summary "success" "${github_repo}"
     fi
 }
 
 main() {
+    initialize_installer_logs
+    installer_log_message "info" "Starting installer.sh with args: $(installer_format_command "$@")"
+    parse_cli_args "$@"
+    validate_runtime_env_overrides
+    validate_store_branch "${BRANCH}" || fail "Invalid store branch: ${BRANCH}"
+
     case "${MODE}" in
         install)
             main_install
             ;;
-        update|--update)
+        update)
             main_update
             ;;
-        --build-deps|build-deps)
+        build-deps)
             log "Installing Linux build dependencies for syncpss..."
             log "If another apt/dpkg process is already running, this script will wait for it to finish."
             if pgrep -x apt >/dev/null 2>&1 || \
@@ -2840,21 +4761,49 @@ main() {
             log
             log "WSL build dependencies are installed."
             ;;
-        *)
+        help)
             cat <<EOF
 Usage:
-  bash scripts/sh/installer.sh
-  bash scripts/sh/installer.sh update
+  bash scripts/sh/installer.sh [--release]
+  bash scripts/sh/installer.sh --local
+  bash scripts/sh/installer.sh update [--release]
+  bash scripts/sh/installer.sh update --local
   bash scripts/sh/installer.sh --build-deps
 
 Modes:
-  install       Install dependencies, set up the pass-store repo, then download and run the install binary
-  update        Update an existing syncpss install using the latest release assets
+  install       Install dependencies, set up the pass-store repo, then install syncpss
+  update        Update an existing syncpss install
   --build-deps  Install the Linux build toolchain needed by scripts/build.bat
+
+Install Sources:
+  --release     Use the published GitHub release channel (default)
+  --local       Use locally staged development assets from ~/.syncpss/helpers
+EOF
+            exit 0
+            ;;
+        *)
+            cat <<EOF
+Usage:
+  bash scripts/sh/installer.sh [--release]
+  bash scripts/sh/installer.sh --local
+  bash scripts/sh/installer.sh update [--release]
+  bash scripts/sh/installer.sh update --local
+  bash scripts/sh/installer.sh --build-deps
+
+Modes:
+  install       Install dependencies, set up the pass-store repo, then install syncpss
+  update        Update an existing syncpss install
+  --build-deps  Install the Linux build toolchain needed by scripts/build.bat
+
+Install Sources:
+  --release     Use the published GitHub release channel (default)
+  --local       Use locally staged development assets from ~/.syncpss/helpers
 EOF
             exit 1
             ;;
     esac
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

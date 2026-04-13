@@ -2,6 +2,7 @@
 
 #include "util/paths.hpp"
 #include "util/runtime_config.hpp"
+#include "util/validation.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -98,11 +99,37 @@ AppConfig load_config() {
     if (config.gpg_key_id.empty()) {
         throw std::runtime_error("Config missing [gpg] key_id");
     }
+    const std::string repo_prefix = "git@github.com:";
+    const std::string repo_suffix = ".git";
+    if (config.repo_url.rfind(repo_prefix, 0) != 0 || config.repo_url.size() <= repo_prefix.size() + repo_suffix.size() ||
+        config.repo_url.substr(config.repo_url.size() - repo_suffix.size()) != repo_suffix) {
+        throw std::runtime_error("Config [repo] url must be a git@github.com:<owner>/<repo>.git URL");
+    }
+    validate_repo_id_or_throw(
+        config.repo_url.substr(repo_prefix.size(), config.repo_url.size() - repo_prefix.size() - repo_suffix.size()),
+        "config github repo"
+    );
+    validate_gpg_key_id_or_throw(config.gpg_key_id, "config gpg key id");
+    validate_branch_name_or_throw(config.repo_branch, "config repo branch");
+    require_managed_path(config.store_path, "config store path");
 
     return config;
 }
 
 void save_config(const AppConfig& config) {
+    const std::string repo_prefix = "git@github.com:";
+    const std::string repo_suffix = ".git";
+    if (config.repo_url.rfind(repo_prefix, 0) != 0 || config.repo_url.size() <= repo_prefix.size() + repo_suffix.size() ||
+        config.repo_url.substr(config.repo_url.size() - repo_suffix.size()) != repo_suffix) {
+        throw std::runtime_error("Refusing to write an invalid GitHub SSH repo URL to config");
+    }
+    validate_repo_id_or_throw(
+        config.repo_url.substr(repo_prefix.size(), config.repo_url.size() - repo_prefix.size() - repo_suffix.size()),
+        "config github repo"
+    );
+    validate_gpg_key_id_or_throw(config.gpg_key_id, "config gpg key id");
+    validate_branch_name_or_throw(config.repo_branch, "config repo branch");
+    require_managed_path(config.store_path, "config store path");
     std::filesystem::create_directories(config_directory());
 
     std::ofstream output(config_path(), std::ios::trunc);

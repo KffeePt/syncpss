@@ -6,6 +6,28 @@
 namespace syncpss::tui {
 using namespace detail;
 
+namespace {
+
+constexpr auto kClipboardLeaseDuration = std::chrono::seconds(30);
+
+void render_clipboard_copy_frame(const std::string& label) {
+    reset_screen_canvas();
+    box(stdscr, 0, 0);
+    apply_pair(kColorHeader);
+    attron(A_BOLD);
+    mvprintw(1, 2, "Copying");
+    attroff(A_BOLD);
+    clear_pair(kColorHeader);
+
+    apply_pair(kColorSuccess);
+    mvprintw(3, 2, "Reading and copying %s...", label.c_str());
+    clear_pair(kColorSuccess);
+    mvprintw(5, 2, "Please wait. Input is paused until the clipboard copy finishes.");
+    present_screen();
+}
+
+}  // namespace
+
 void TuiApp::view_passwords() {
     ensure_dependencies({"pass", "gpg", "git"});
 
@@ -312,6 +334,7 @@ void TuiApp::view_passwords() {
 
         const std::string entry_name = item.path;
         if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            render_clipboard_copy_frame("password");
             syncpss::store::Entry entry;
             try {
                 entry = with_terminal_handoff([&]() {
@@ -323,10 +346,12 @@ void TuiApp::view_passwords() {
                 }
                 throw;
             }
+            flushinp();
             const syncpss::util::ClipboardLease lease =
-                syncpss::util::copy_to_clipboard_with_expiry(entry.password, std::chrono::seconds(60));
+                syncpss::util::copy_to_clipboard_with_expiry(entry.password, kClipboardLeaseDuration);
             show_clipboard_notice("Password", lease);
         } else if (ch == 'u' || ch == 'U') {
+            render_clipboard_copy_frame("username");
             syncpss::store::Entry entry;
             try {
                 entry = with_terminal_handoff([&]() {
@@ -338,8 +363,9 @@ void TuiApp::view_passwords() {
                 }
                 throw;
             }
+            flushinp();
             const syncpss::util::ClipboardLease lease =
-                syncpss::util::copy_to_clipboard_with_expiry(entry.username, std::chrono::seconds(60));
+                syncpss::util::copy_to_clipboard_with_expiry(entry.username, kClipboardLeaseDuration);
             show_clipboard_notice("Username", lease);
         } else if (ch == 'n' || ch == 'N') {
             const std::string notes = store_->read_notes(entry_name);

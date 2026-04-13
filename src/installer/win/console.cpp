@@ -54,7 +54,7 @@ bool prompt_yes_no(const std::wstring& message, bool default_yes) {
     std::wcout << message << suffix;
     std::wcout.flush();
     std::wstring answer;
-    std::getline(std::wcin >> std::ws, answer);
+    std::getline(std::wcin, answer);
     if (answer.empty()) {
         return default_yes;
     }
@@ -67,5 +67,5 @@ void prompt_press_enter(const std::wstring& message) {
     std::wcout << message;
     std::wcout.flush();
     std::wstring ignored;
-    std::getline(std::wcin >> std::ws, ignored);
+    std::getline(std::wcin, ignored);
 }

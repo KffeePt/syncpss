@@ -60,6 +60,7 @@ case "${BUILD_TARGET}" in
     installer|all)
         cp install "${BIN_DIR}/install"
         cp "${REPO_ROOT}/scripts/sh/installer.sh" "${BIN_DIR}/installer.sh"
+        cp "${REPO_ROOT}/scripts/sh/managed_paths.sh" "${BIN_DIR}/managed_paths.sh"
         cp "${REPO_ROOT}/scripts/sh/uninstall_syncpss.sh" "${BIN_DIR}/uninstall_syncpss.sh"
         cp "${REPO_ROOT}/manifest.xml" "${BIN_DIR}/manifest.xml"
         ;;
@@ -72,6 +73,7 @@ if command -v sha256sum >/dev/null 2>&1; then
     if [[ "${BUILD_TARGET}" == "installer" || "${BUILD_TARGET}" == "all" ]]; then
         sha256sum "${BIN_DIR}/install" > "${BIN_DIR}/install.sha256"
         sha256sum "${BIN_DIR}/installer.sh" > "${BIN_DIR}/installer.sh.sha256"
+        sha256sum "${BIN_DIR}/managed_paths.sh" > "${BIN_DIR}/managed_paths.sh.sha256"
         sha256sum "${BIN_DIR}/uninstall_syncpss.sh" > "${BIN_DIR}/uninstall_syncpss.sh.sha256"
         sha256sum "${BIN_DIR}/manifest.xml" > "${BIN_DIR}/manifest.xml.sha256"
     fi
@@ -82,6 +84,7 @@ elif command -v shasum >/dev/null 2>&1; then
     if [[ "${BUILD_TARGET}" == "installer" || "${BUILD_TARGET}" == "all" ]]; then
         shasum -a 256 "${BIN_DIR}/install" > "${BIN_DIR}/install.sha256"
         shasum -a 256 "${BIN_DIR}/installer.sh" > "${BIN_DIR}/installer.sh.sha256"
+        shasum -a 256 "${BIN_DIR}/managed_paths.sh" > "${BIN_DIR}/managed_paths.sh.sha256"
         shasum -a 256 "${BIN_DIR}/uninstall_syncpss.sh" > "${BIN_DIR}/uninstall_syncpss.sh.sha256"
         shasum -a 256 "${BIN_DIR}/manifest.xml" > "${BIN_DIR}/manifest.xml.sha256"
     fi
@@ -95,6 +98,7 @@ fi
 if [[ "${BUILD_TARGET}" == "installer" || "${BUILD_TARGET}" == "all" ]]; then
     echo "Binary: ${BIN_DIR}/install"
     echo "Helper: ${BIN_DIR}/installer.sh"
+    echo "Helper: ${BIN_DIR}/managed_paths.sh"
     echo "Helper: ${BIN_DIR}/uninstall_syncpss.sh"
     echo "Asset: ${BIN_DIR}/manifest.xml"
 fi

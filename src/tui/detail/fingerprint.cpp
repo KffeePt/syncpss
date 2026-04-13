@@ -136,10 +136,11 @@ std::string sha256_for_file(const std::filesystem::path& path) {
 
 std::string compute_local_install_fingerprint(const syncpss::util::RuntimeConfig& runtime_config) {
     const std::filesystem::path install_assets_dir = syncpss::util::runtime_install_assets_directory();
-    const std::array<std::filesystem::path, 4> inputs = {
+    const std::array<std::filesystem::path, 5> inputs = {
         runtime_config.install_binary,
         install_assets_dir / "install",
         install_assets_dir / "installer.sh",
+        install_assets_dir / "managed_paths.sh",
         install_assets_dir / "uninstall_syncpss.sh"
     };
 

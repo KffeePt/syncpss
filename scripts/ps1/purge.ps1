@@ -166,12 +166,15 @@ function Copy-TextFileWithLf {
     [System.IO.File]::WriteAllText($DestinationPath, $normalized, $encoding)
 }
 
-function Resolve-UninstallScriptSource {
-    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+function Resolve-PurgeHelperSource {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
 
     $candidates = @(
-        (Join-Path $RepoRoot "scripts\sh\uninstall_syncpss.sh"),
-        (Join-Path $RepoRoot "bin\uninstall_syncpss.sh")
+        (Join-Path $RepoRoot "scripts\sh\$RelativePath"),
+        (Join-Path $RepoRoot "bin\$RelativePath")
     )
 
     foreach ($candidate in $candidates) {
@@ -180,24 +183,30 @@ function Resolve-UninstallScriptSource {
         }
     }
 
-    throw "Could not find uninstall_syncpss.sh in the repo checkout or bin directory."
+    throw "Could not find $RelativePath in the repo checkout or bin directory."
 }
 
-function Copy-UninstallScriptToWslHome {
+function Copy-PurgeHelpersToWslHome {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$DistroName,
         [Parameter(Mandatory = $true)][string]$LinuxUser
     )
 
-    $source = Resolve-UninstallScriptSource -RepoRoot $RepoRoot
     $stageDir = "\\wsl.localhost\$DistroName\home\$LinuxUser\.syncpss\helpers"
     if (-not (Test-Path -LiteralPath $stageDir)) {
-        New-Item -ItemType Directory -Path $stageDir | Out-Null
+        New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
     }
-    $target = Join-Path $stageDir "uninstall_syncpss.sh"
-    Copy-TextFileWithLf -SourcePath $source -DestinationPath $target
-    return $target
+
+    $copiedTargets = @()
+    foreach ($relativePath in @("uninstall_syncpss.sh", "managed_paths.sh")) {
+        $source = Resolve-PurgeHelperSource -RepoRoot $RepoRoot -RelativePath $relativePath
+        $target = Join-Path $stageDir $relativePath
+        Copy-TextFileWithLf -SourcePath $source -DestinationPath $target
+        $copiedTargets += $target
+    }
+
+    return $copiedTargets
 }
 
 function Get-WindowsShortcutMarkerPath {
@@ -220,9 +229,14 @@ function Remove-WindowsStartMenuIntegrationIfRequested {
         return
     }
 
-    Remove-WindowsStartMenuIntegration
-    Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
-    Write-Host "Removed Windows Start Menu shortcut and local syncpss launcher assets." -ForegroundColor Green
+    $cleanupComplete = Remove-WindowsStartMenuIntegration
+    if ($cleanupComplete) {
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        Write-Host "Removed Windows Start Menu shortcut and local syncpss launcher assets." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "Windows launcher cleanup is incomplete. Leaving a retry marker in WSL for a later purge run." -ForegroundColor Yellow
 }
 
 function Open-WslShellAtHome {
@@ -262,28 +276,103 @@ function Invoke-WslUninstall {
     return [int]$process.ExitCode
 }
 
+function Invoke-StagedWslUninstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$DistroName,
+        [Parameter(Mandatory = $true)][string]$LinuxUser,
+        [string[]]$ExtraArguments = @()
+    )
+
+    $copiedHelpers = Copy-PurgeHelpersToWslHome -RepoRoot $RepoRoot -DistroName $DistroName -LinuxUser $LinuxUser
+    foreach ($helperPath in $copiedHelpers) {
+        Write-Host "Copied helper to $helperPath" -ForegroundColor Green
+    }
+
+    $exitCode = Invoke-WslUninstall -DistroName $DistroName -LinuxUser $LinuxUser -ExtraArguments $ExtraArguments
+    Remove-WindowsStartMenuIntegrationIfRequested -DistroName $DistroName -LinuxUser $LinuxUser
+    return $exitCode
+}
+
 function Remove-WindowsStartMenuIntegration {
+    function Remove-PathBestEffort {
+        param(
+            [Parameter(Mandatory = $true)][string]$LiteralPath,
+            [Parameter(Mandatory = $true)][string]$Label,
+            [switch]$AllowEmptyDirectoryResidue
+        )
+
+        if (-not (Test-Path -LiteralPath $LiteralPath)) {
+            return $true
+        }
+
+        $attempts = 3
+        $lastMessage = ""
+        for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $LiteralPath -Recurse -Force -ErrorAction Stop
+            } catch {
+                $lastMessage = $_.Exception.Message
+            }
+
+            if (-not (Test-Path -LiteralPath $LiteralPath)) {
+                return $true
+            }
+
+            if ($AllowEmptyDirectoryResidue -and (Test-Path -LiteralPath $LiteralPath -PathType Container)) {
+                Get-ChildItem -LiteralPath $LiteralPath -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                    try {
+                        Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+                    } catch {
+                    }
+                }
+
+                if (-not (Get-ChildItem -LiteralPath $LiteralPath -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+                    Write-Host ("Leaving empty locked directory in place for now: {0}" -f $LiteralPath) -ForegroundColor Yellow
+                    return $false
+                }
+            }
+
+            Start-Sleep -Milliseconds 250
+        }
+
+        if ([string]::IsNullOrWhiteSpace($lastMessage)) {
+            $lastMessage = "Path is still present after repeated delete attempts."
+        }
+        Write-Host ("Could not remove {0} at {1}: {2}" -f $Label, $LiteralPath, $lastMessage) -ForegroundColor Yellow
+        return $false
+    }
+
     $startMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\syncpss.lnk"
     $appDataDir = Join-Path $env:LOCALAPPDATA "syncpss"
     $runtimeDir = Join-Path $env:USERPROFILE ".syncpss"
     $removedAny = $false
+    $cleanupComplete = $true
 
     if (Test-Path -LiteralPath $startMenuShortcut) {
-        Remove-Item -LiteralPath $startMenuShortcut -Force -ErrorAction SilentlyContinue
+        if (-not (Remove-PathBestEffort -LiteralPath $startMenuShortcut -Label "Windows Start Menu shortcut")) {
+            $cleanupComplete = $false
+        }
         $removedAny = $true
     }
     if (Test-Path -LiteralPath $appDataDir) {
-        Remove-Item -LiteralPath $appDataDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Remove-PathBestEffort -LiteralPath $appDataDir -Label "Windows local app assets")) {
+            $cleanupComplete = $false
+        }
         $removedAny = $true
     }
     if (Test-Path -LiteralPath $runtimeDir) {
-        Remove-Item -LiteralPath $runtimeDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Remove-PathBestEffort -LiteralPath $runtimeDir -Label "Windows runtime helper directory" -AllowEmptyDirectoryResidue)) {
+            $cleanupComplete = $false
+        }
         $removedAny = $true
     }
 
     if (-not $removedAny) {
         Write-Host "No Windows Start Menu shortcut or local syncpss launcher files were found." -ForegroundColor Yellow
     }
+
+    return $cleanupComplete
 }
 
 function Invoke-Purge {
@@ -292,9 +381,6 @@ function Invoke-Purge {
 
     $selectedDistro = Select-WslDistro -RequestedDistro $Distro
     $selectedUser = Select-WslUser -DistroName $selectedDistro -RequestedUser $User
-    $scriptPath = Copy-UninstallScriptToWslHome -RepoRoot $repoRoot -DistroName $selectedDistro -LinuxUser $selectedUser
-
-    Write-Host "Copied uninstall script to $scriptPath" -ForegroundColor Green
 
     if ($RunNow) {
         $extraArguments = @()
@@ -304,8 +390,7 @@ function Invoke-Purge {
         if ($PurgeWindowsShortcut) {
             $extraArguments += "--purge-windows-shortcut"
         }
-        $exitCode = Invoke-WslUninstall -DistroName $selectedDistro -LinuxUser $selectedUser -ExtraArguments $extraArguments
-        Remove-WindowsStartMenuIntegrationIfRequested -DistroName $selectedDistro -LinuxUser $selectedUser
+        $exitCode = Invoke-StagedWslUninstall -RepoRoot $repoRoot -DistroName $selectedDistro -LinuxUser $selectedUser -ExtraArguments $extraArguments
         if ($exitCode -ne 0) {
             throw "WSL uninstall exited with code $exitCode"
         }
@@ -323,9 +408,8 @@ function Invoke-Purge {
                 if ($PurgeWindowsShortcut) {
                     $extraArguments += "--purge-windows-shortcut"
                 }
-                $exitCode = Invoke-WslUninstall -DistroName $selectedDistro -LinuxUser $selectedUser -ExtraArguments $extraArguments
+                $exitCode = Invoke-StagedWslUninstall -RepoRoot $repoRoot -DistroName $selectedDistro -LinuxUser $selectedUser -ExtraArguments $extraArguments
                 if ($exitCode -eq 0) {
-                    Remove-WindowsStartMenuIntegrationIfRequested -DistroName $selectedDistro -LinuxUser $selectedUser
                     return
                 }
 

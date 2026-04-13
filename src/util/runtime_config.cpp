@@ -1,6 +1,7 @@
 #include "util/runtime_config.hpp"
 
 #include "util/paths.hpp"
+#include "util/validation.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -27,7 +28,9 @@ std::string require_string(const json& node, const char* key) {
     if (!node.contains(key) || !node.at(key).is_string()) {
         throw std::runtime_error(std::string("Runtime config missing string field: ") + key);
     }
-    return node.at(key).get<std::string>();
+    const std::string value = node.at(key).get<std::string>();
+    require_safe_single_line(value, std::string("Runtime config field ") + key);
+    return value;
 }
 
 std::string optional_string(const json& node, const char* key, const std::string& fallback = "") {
@@ -37,7 +40,11 @@ std::string optional_string(const json& node, const char* key, const std::string
     if (!node.at(key).is_string()) {
         throw std::runtime_error(std::string("Runtime config field must be a string: ") + key);
     }
-    return node.at(key).get<std::string>();
+    const std::string value = node.at(key).get<std::string>();
+    if (!value.empty()) {
+        require_safe_single_line(value, std::string("Runtime config field ") + key);
+    }
+    return value;
 }
 
 bool optional_bool(const json& node, const char* key, bool fallback = false) {
@@ -99,6 +106,7 @@ std::string load_preferred_private_repo_name() {
     if (env_value != nullptr) {
         const std::string trimmed_env = trim(env_value);
         if (!trimmed_env.empty()) {
+            validate_repo_name_or_throw(trimmed_env, "preferred private repo name");
             return trimmed_env;
         }
     }
@@ -123,7 +131,11 @@ std::string load_preferred_private_repo_name() {
         if (key != "SYNCPSS_PRIVATE_REPO_NAME") {
             continue;
         }
-        return trim(line.substr(split + 1U));
+        const std::string value = trim(line.substr(split + 1U));
+        if (!value.empty()) {
+            validate_repo_name_or_throw(value, "preferred private repo name");
+        }
+        return value;
     }
     return "";
 }
@@ -183,14 +195,17 @@ RuntimeConfig load_runtime_config() {
     config.ssh_key_path = expand_user_path(ssh_key);
     config.github_repo = require_string(github, "repo");
     config.github_repo_name = optional_string(github, "repo_name", repo_name_from_repo_id(config.github_repo));
+    validate_repo_id_or_throw(config.github_repo, "runtime github repo");
     if (config.github_repo_name.empty()) {
         config.github_repo_name = load_preferred_private_repo_name();
     }
     if (config.github_repo_name.empty()) {
         config.github_repo_name = repo_name_from_repo_id(config.github_repo);
     }
+    validate_repo_name_or_throw(config.github_repo_name, "runtime github repo name");
 
     config.gpg_key_id = require_string(gpg, "key_id");
+    validate_gpg_key_id_or_throw(config.gpg_key_id, "runtime gpg key id");
     config.gpg_keys_remote = optional_bool(gpg, "keys_remote", false);
     const json telemetry = root.contains("telemetry") && root.at("telemetry").is_object()
         ? root.at("telemetry")
@@ -214,12 +229,16 @@ RuntimeConfig load_runtime_config() {
     if (config.store_branch.empty()) {
         config.store_branch = "main";
     }
+    validate_branch_name_or_throw(config.store_branch, "runtime store branch");
+    require_managed_path(config.store_path, "runtime store");
 
     config.install_binary = expand_user_path(optional_string(install, "binary", "/usr/local/bin/syncpss"));
     config.install_config_dir = expand_user_path(optional_string(install, "config_dir", "/etc/syncpass"));
     config.install_distro = optional_string(install, "distro");
     config.install_installed_at = optional_string(install, "installed_at");
     config.install_version = optional_string(install, "version");
+    require_managed_path(config.install_binary, "runtime installed binary");
+    require_managed_path(config.install_config_dir, "runtime install config");
 
     return config;
 }
@@ -232,6 +251,13 @@ void save_runtime_config(const RuntimeConfig& config) {
     if (normalized.github_repo_name.empty()) {
         normalized.github_repo_name = repo_name_from_repo_id(normalized.github_repo);
     }
+    validate_repo_id_or_throw(normalized.github_repo, "runtime github repo");
+    validate_repo_name_or_throw(normalized.github_repo_name, "runtime github repo name");
+    validate_gpg_key_id_or_throw(normalized.gpg_key_id, "runtime gpg key id");
+    validate_branch_name_or_throw(normalized.store_branch, "runtime store branch");
+    require_managed_path(normalized.store_path, "runtime store");
+    require_managed_path(normalized.install_binary, "runtime installed binary");
+    require_managed_path(normalized.install_config_dir, "runtime install config");
     normalized.telemetry_mode = normalize_telemetry_mode(normalized.telemetry_mode);
     normalized.metadata_logging_enabled = normalized.telemetry_mode != "off";
     normalized.metadata_log_hostname = normalized.telemetry_mode == "on";

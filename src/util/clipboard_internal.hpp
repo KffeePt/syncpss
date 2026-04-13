@@ -18,16 +18,20 @@ struct LeaseRecord {
 };
 
 extern std::atomic<std::uint64_t> g_clipboard_generation;
+extern std::atomic<std::uint64_t> g_active_clipboard_lease_id;
 extern std::mutex g_clipboard_mutex;
 extern std::unordered_map<std::uint64_t, LeaseRecord> g_clipboard_leases;
 
 std::vector<std::string> clipboard_write_command();
 std::vector<std::string> clipboard_read_command();
 std::string read_clipboard_text();
+bool copy_windows_clipboard_with_lease(std::uint64_t lease_id, const std::string& text);
 bool register_windows_clipboard_lease(std::uint64_t lease_id, const std::string& text);
 bool launch_windows_clipboard_watcher(std::uint64_t lease_id, std::chrono::seconds delay);
 bool schedule_windows_clipboard_clear(std::uint64_t lease_id, std::chrono::seconds delay);
+bool cancel_windows_clipboard_lease(std::uint64_t lease_id);
 void set_clipboard_lease_state(std::uint64_t lease_id, ClipboardLeaseState state);
 std::string clipboard_lease_text(std::uint64_t lease_id);
+bool clipboard_lease_is_current(std::uint64_t lease_id);
 
 }  // namespace syncpss::util::detail

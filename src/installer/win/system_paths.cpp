@@ -8,6 +8,48 @@ bool host_command_available(const std::wstring& command) {
 
 namespace {
 
+std::filesystem::path normalize_windows_env_path(const std::wstring& raw_value, const wchar_t* variable_name) {
+    const std::wstring trimmed = trim(raw_value);
+    if (trimmed.empty() || contains_control_chars(trimmed)) {
+        throw std::runtime_error("Windows environment path is empty or unsafe");
+    }
+
+    const std::filesystem::path path(trimmed);
+    if (!path.is_absolute()) {
+        throw std::runtime_error("Windows environment path is not absolute");
+    }
+
+    const std::filesystem::path normalized = path.lexically_normal();
+    if (normalized == normalized.root_path()) {
+        throw std::runtime_error("Windows environment path is too broad");
+    }
+
+    if (normalized.root_name().empty() || normalized.root_directory().empty()) {
+        throw std::runtime_error("Windows environment path is malformed");
+    }
+
+    (void)variable_name;
+    return normalized;
+}
+
+bool path_is_within_root(const std::filesystem::path& candidate, const std::filesystem::path& root) {
+    auto candidate_it = candidate.begin();
+    auto root_it = root.begin();
+    for (; root_it != root.end(); ++root_it, ++candidate_it) {
+        if (candidate_it == candidate.end() || *candidate_it != *root_it) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void require_within_profile(const std::filesystem::path& candidate, const std::wstring& description) {
+    const std::filesystem::path profile_root = normalize_windows_env_path(appdata_path(L"USERPROFILE").wstring(), L"USERPROFILE");
+    if (!path_is_within_root(candidate, profile_root)) {
+        throw std::runtime_error(to_utf8(description) + " is outside the active Windows profile root");
+    }
+}
+
 int run_elevated_process_and_wait(const std::wstring& file, const std::wstring& parameters) {
     SHELLEXECUTEINFOW exec_info{};
     exec_info.cbSize = sizeof(exec_info);
@@ -113,7 +155,7 @@ std::filesystem::path appdata_path(const wchar_t* variable_name) {
     if (_wdupenv_s(&value, &size, variable_name) != 0 || value == nullptr || size == 0) {
         throw std::runtime_error("Required Windows environment variable is missing");
     }
-    std::filesystem::path result(value);
+    const std::filesystem::path result = normalize_windows_env_path(value, variable_name);
     free(value);
     return result;
 }
@@ -123,7 +165,9 @@ std::filesystem::path userprofile_path() {
 }
 
 std::filesystem::path local_syncpss_app_dir() {
-    return appdata_path(L"LOCALAPPDATA") / kWindowsAppDirName;
+    const std::filesystem::path local_app_data = appdata_path(L"LOCALAPPDATA");
+    require_within_profile(local_app_data, L"LOCALAPPDATA");
+    return local_app_data / kWindowsAppDirName;
 }
 
 std::filesystem::path windows_runtime_dir() {
@@ -131,7 +175,9 @@ std::filesystem::path windows_runtime_dir() {
 }
 
 std::filesystem::path start_menu_programs_dir() {
-    return appdata_path(L"APPDATA") / L"Microsoft" / L"Windows" / L"Start Menu" / L"Programs";
+    const std::filesystem::path roaming_app_data = appdata_path(L"APPDATA");
+    require_within_profile(roaming_app_data, L"APPDATA");
+    return roaming_app_data / L"Microsoft" / L"Windows" / L"Start Menu" / L"Programs";
 }
 
 std::wstring ps_single_quote(const std::wstring& value) {

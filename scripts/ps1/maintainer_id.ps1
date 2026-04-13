@@ -1,3 +1,6 @@
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 $script:MaintainerIdEnvName = "SYNCPSS_MAINTAINER_ID"
 $script:LegacyMaintainerIdHash = "4e6840a7429669ff3ed6747d5727cc2cceab1113e1336b87b4a541a1c1ecc0b0"
 

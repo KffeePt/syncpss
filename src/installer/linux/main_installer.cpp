@@ -16,9 +16,13 @@
 #include "util/paths.hpp"
 #include "util/process.hpp"
 #include "util/runtime_config.hpp"
+#include "util/validation.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <fstream>
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <iterator>
@@ -35,10 +39,27 @@ namespace {
 
 constexpr const char* kRepoOwner = "KffeePt";
 constexpr const char* kRepoName = "syncpss";
+constexpr const char* kInstallAsset = "install";
+constexpr const char* kInstallAssetSha = "install.sha256";
 constexpr const char* kSyncpssAsset = "syncpss-linux-x86_64";
 constexpr const char* kSyncpssAssetSha = "syncpss-linux-x86_64.sha256";
 constexpr const char* kManifestAsset = "manifest.xml";
 constexpr const char* kManifestAssetSha = "manifest.xml.sha256";
+constexpr const char* kInstallerScriptAsset = "installer.sh";
+constexpr const char* kInstallerScriptAssetSha = "installer.sh.sha256";
+constexpr const char* kManagedPathsScriptAsset = "managed_paths.sh";
+constexpr const char* kManagedPathsScriptAssetSha = "managed_paths.sh.sha256";
+constexpr const char* kUninstallScriptAsset = "uninstall_syncpss.sh";
+constexpr const char* kUninstallScriptAssetSha = "uninstall_syncpss.sh.sha256";
+constexpr const char* kMasterFingerprintAsset = "master_fingerprint.sha256";
+
+struct VerificationAssets {
+    std::filesystem::path install_binary;
+    std::filesystem::path installer_script;
+    std::filesystem::path managed_paths_script;
+    std::filesystem::path uninstall_script;
+    std::filesystem::path master_fingerprint;
+};
 
 struct InstallArgs {
     std::string github_user;
@@ -93,6 +114,10 @@ InstallArgs parse_args(int argc, char** argv) {
     if (args.branch.empty()) {
         args.branch = "main";
     }
+    syncpss::util::validate_repo_id_or_throw(args.github_repo, "install github repo");
+    syncpss::util::validate_gpg_key_id_or_throw(args.gpg_key_id, "install gpg key id");
+    syncpss::util::validate_branch_name_or_throw(args.branch, "install branch");
+    syncpss::util::require_managed_path(args.store_path, "install store");
     return args;
 }
 
@@ -135,6 +160,7 @@ std::string release_url(const std::string& asset_name) {
         if (const char* requested = std::getenv("SYNCPSS_RELEASE_TAG")) {
             const std::string trimmed = trim(requested);
             if (!trimmed.empty()) {
+                syncpss::util::require_safe_single_line(trimmed, "release tag");
                 return trimmed;
             }
         }
@@ -154,16 +180,16 @@ std::string release_url(const std::string& asset_name) {
             throw std::runtime_error("Could not resolve the latest syncpss release");
         }
 
-        static const std::regex tag_pattern("\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
-        std::smatch match;
-        if (!std::regex_search(result.stdout_output, match, tag_pattern) || match.size() < 2) {
+        const nlohmann::json payload = nlohmann::json::parse(result.stdout_output);
+        if (!payload.contains("tag_name") || !payload.at("tag_name").is_string()) {
             throw std::runtime_error("GitHub did not return a release tag for syncpss");
         }
 
-        const std::string tag = trim(match[1].str());
+        const std::string tag = trim(payload.at("tag_name").get<std::string>());
         if (tag.empty()) {
             throw std::runtime_error("GitHub returned an empty release tag for syncpss");
         }
+        syncpss::util::require_safe_single_line(tag, "release tag");
         return tag;
     }();
 
@@ -254,10 +280,87 @@ std::filesystem::path resolve_or_download_asset(
 
     const std::filesystem::path downloaded_binary = temp_dir / asset_name;
     const std::filesystem::path downloaded_checksum = temp_dir / checksum_name;
-    require_ok({"curl", "-fsSL", release_url(asset_name), "-o", downloaded_binary.string()}, "Download syncpss binary");
-    require_ok({"curl", "-fsSL", release_url(checksum_name), "-o", downloaded_checksum.string()}, "Download syncpss checksum");
+    syncpss::util::require_temporary_path(downloaded_binary, "downloaded asset");
+    syncpss::util::require_temporary_path(downloaded_checksum, "downloaded checksum");
+    require_ok({"curl", "-fsSL", release_url(asset_name), "-o", downloaded_binary.string()}, "Download " + asset_name);
+    require_ok({"curl", "-fsSL", release_url(checksum_name), "-o", downloaded_checksum.string()}, "Download " + checksum_name);
     verify_checksum(downloaded_binary, downloaded_checksum);
     return downloaded_binary;
+}
+
+std::filesystem::path resolve_or_download_plain_asset(
+    const std::filesystem::path& temp_dir,
+    const std::filesystem::path& local_dir,
+    const std::string& asset_name
+) {
+    const std::filesystem::path local_asset = local_dir / asset_name;
+    if (std::filesystem::exists(local_asset)) {
+        return local_asset;
+    }
+
+    const std::filesystem::path downloaded_asset = temp_dir / asset_name;
+    syncpss::util::require_temporary_path(downloaded_asset, "downloaded asset");
+    require_ok({"curl", "-fsSL", release_url(asset_name), "-o", downloaded_asset.string()}, "Download " + asset_name);
+    return downloaded_asset;
+}
+
+std::string compute_combined_sha256(
+    const std::filesystem::path& temp_dir,
+    const std::array<std::filesystem::path, 5>& input_paths
+) {
+    const std::filesystem::path payload_path = temp_dir / ".release-fingerprint-payload";
+    syncpss::util::require_temporary_path(payload_path, "fingerprint payload");
+    {
+        std::ofstream output(payload_path, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            throw std::runtime_error("Cannot create temporary fingerprint payload");
+        }
+
+        for (const auto& input_path : input_paths) {
+            std::ifstream input(input_path, std::ios::binary);
+            if (!input) {
+                throw std::runtime_error("Cannot read fingerprint input asset: " + input_path.string());
+            }
+            output << input.rdbuf();
+        }
+    }
+
+    const std::string checksum = sha256_for_file(payload_path);
+    std::error_code ignored;
+    std::filesystem::remove(payload_path, ignored);
+    return checksum;
+}
+
+VerificationAssets resolve_verification_assets(
+    const std::filesystem::path& temp_dir,
+    const std::filesystem::path& local_dir
+) {
+    return VerificationAssets{
+        resolve_or_download_asset(temp_dir, local_dir, kInstallAsset, kInstallAssetSha),
+        resolve_or_download_asset(temp_dir, local_dir, kInstallerScriptAsset, kInstallerScriptAssetSha),
+        resolve_or_download_asset(temp_dir, local_dir, kManagedPathsScriptAsset, kManagedPathsScriptAssetSha),
+        resolve_or_download_asset(temp_dir, local_dir, kUninstallScriptAsset, kUninstallScriptAssetSha),
+        resolve_or_download_plain_asset(temp_dir, local_dir, kMasterFingerprintAsset)
+    };
+}
+
+void verify_master_fingerprint(
+    const std::filesystem::path& temp_dir,
+    const VerificationAssets& assets,
+    const std::filesystem::path& syncpss_binary
+) {
+    const std::array<std::filesystem::path, 5> fingerprint_inputs = {
+        syncpss_binary,
+        assets.install_binary,
+        assets.installer_script,
+        assets.managed_paths_script,
+        assets.uninstall_script
+    };
+    const std::string expected = read_first_token(assets.master_fingerprint);
+    const std::string actual = compute_combined_sha256(temp_dir, fingerprint_inputs);
+    if (expected != actual) {
+        throw std::runtime_error("master_fingerprint.sha256 does not match the staged release assets");
+    }
 }
 
 std::string utc_now_iso8601() {
@@ -274,6 +377,12 @@ void install_syncpss_binary(const std::filesystem::path& source_path) {
     }
 
     const std::filesystem::path target = syncpss::util::binary_install_path("syncpss");
+    if (syncpss::util::normalize_path(syncpss::util::install_bin_directory()) !=
+        syncpss::util::normalize_path("/usr/local/bin")) {
+        throw std::runtime_error("Install bin directory is outside the managed syncpss boundary");
+    }
+    syncpss::util::require_managed_path(target, "install binary");
+    syncpss::util::require_managed_path(syncpss::util::binary_install_path("syncpass"), "install alias");
     require_ok({"install", "-d", "-m", "755", syncpss::util::install_bin_directory().string()}, "Create /usr/local/bin");
     require_ok({"install", "-m", "755", source_path.string(), target.string()}, "Install syncpss binary");
     require_ok({"ln", "-sfn", target.string(), syncpss::util::binary_install_path("syncpass").string()}, "Create syncpass symlink");
@@ -285,14 +394,56 @@ void install_manifest(const std::filesystem::path& source_path) {
     }
 
     const std::filesystem::path target = syncpss::util::config_manifest_path();
+    if (syncpss::util::normalize_path(syncpss::util::config_directory()) !=
+        syncpss::util::normalize_path("/etc/syncpass")) {
+        throw std::runtime_error("Install config directory is outside the managed syncpss boundary");
+    }
+    syncpss::util::require_managed_path(target.parent_path(), "install config directory");
     require_ok({"install", "-d", "-m", "755", syncpss::util::config_directory().string()}, "Create /etc/syncpass");
     require_ok({"install", "-m", "644", source_path.string(), target.string()}, "Install syncpss manifest");
+}
+
+void stage_runtime_verification_assets(
+    const VerificationAssets& assets,
+    const std::filesystem::path& runtime_dir
+) {
+    const std::filesystem::path fingerprint_dir = syncpss::util::runtime_master_fingerprint_path().parent_path();
+    const std::filesystem::path install_assets_dir = syncpss::util::runtime_install_assets_directory();
+    syncpss::util::require_managed_path(runtime_dir, "runtime directory");
+    syncpss::util::require_managed_path(fingerprint_dir, "runtime fingerprint directory");
+    syncpss::util::require_managed_path(install_assets_dir, "runtime install-assets directory");
+
+    require_ok({"install", "-d", "-m", "700", runtime_dir.string()}, "Create runtime directory");
+    require_ok({"install", "-d", "-m", "700", fingerprint_dir.string()}, "Create runtime fingerprint directory");
+    require_ok({"install", "-d", "-m", "700", install_assets_dir.string()}, "Create runtime install-assets directory");
+
+    require_ok(
+        {"install", "-m", "600", assets.master_fingerprint.string(), syncpss::util::runtime_master_fingerprint_path().string()},
+        "Stage release fingerprint"
+    );
+    require_ok(
+        {"install", "-m", "700", assets.install_binary.string(), (install_assets_dir / kInstallAsset).string()},
+        "Stage install helper"
+    );
+    require_ok(
+        {"install", "-m", "700", assets.installer_script.string(), (install_assets_dir / kInstallerScriptAsset).string()},
+        "Stage installer script"
+    );
+    require_ok(
+        {"install", "-m", "700", assets.managed_paths_script.string(), (install_assets_dir / kManagedPathsScriptAsset).string()},
+        "Stage managed path helper"
+    );
+    require_ok(
+        {"install", "-m", "700", assets.uninstall_script.string(), (install_assets_dir / kUninstallScriptAsset).string()},
+        "Stage uninstall helper"
+    );
 }
 
 void chown_recursive_to_real_user(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path)) {
         return;
     }
+    syncpss::util::require_managed_path(path, "chown");
 
     const std::string username = syncpss::util::get_real_username();
     passwd* pw = ::getpwnam(username.c_str());
@@ -328,6 +479,12 @@ void chown_recursive_to_real_user(const std::filesystem::path& path) {
 // while the JSON runtime config remains the primary source of truth.
 void save_all_config(const InstallArgs& args) {
     std::filesystem::create_directories(syncpss::util::runtime_directory());
+    if (!args.github_user.empty()) {
+        syncpss::util::validate_github_account_name_or_throw(args.github_user, "install github user");
+    }
+    if (!args.github_email.empty()) {
+        syncpss::util::require_safe_single_line(args.github_email, "install github email");
+    }
     syncpss::util::RuntimeConfig runtime_config;
     runtime_config.github_username = args.github_user;
     runtime_config.github_email = args.github_email;
@@ -379,6 +536,11 @@ int main(int argc, char** argv) {
             std::filesystem::path path;
             ~TempDirCleanup() {
                 std::error_code ignored;
+                try {
+                    syncpss::util::require_temporary_path(path, "temporary cleanup");
+                } catch (...) {
+                    return;
+                }
                 std::filesystem::remove_all(path, ignored);
             }
         } cleanup{temp_dir};
@@ -388,16 +550,21 @@ int main(int argc, char** argv) {
             resolve_or_download_asset(temp_dir, asset_dir, kSyncpssAsset, kSyncpssAssetSha);
         const std::filesystem::path manifest_xml =
             resolve_or_download_asset(temp_dir, asset_dir, kManifestAsset, kManifestAssetSha);
+        const VerificationAssets verification_assets = resolve_verification_assets(temp_dir, asset_dir);
+        verify_master_fingerprint(temp_dir, verification_assets, syncpss_binary);
 
         install_syncpss_binary(syncpss_binary);
         install_manifest(manifest_xml);
         save_all_config(args);
+        stage_runtime_verification_assets(verification_assets, syncpss::util::runtime_directory());
+        chown_recursive_to_real_user(syncpss::util::runtime_directory());
 
         std::cout << "Installed syncpss to " << syncpss::util::binary_install_path("syncpss") << '\n';
         std::cout << "Installed syncpass symlink to " << syncpss::util::binary_install_path("syncpass") << '\n';
         std::cout << "Wrote runtime config to " << syncpss::util::runtime_config_path() << '\n';
         std::cout << "Wrote legacy config to " << syncpss::util::config_path() << '\n';
-    std::cout << "You can run 'syncpss' or 'syncpass' now." << '\n';
+        std::cout << "Staged release verification assets in " << syncpss::util::runtime_install_assets_directory() << '\n';
+        std::cout << "You can run 'syncpss' or 'syncpass' now." << '\n';
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "install error: " << ex.what() << '\n';

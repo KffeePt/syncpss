@@ -1,5 +1,61 @@
 #include "common.hpp"
 
+namespace {
+
+std::filesystem::path require_asset_path(const std::filesystem::path& base_dir, const wchar_t* asset_name) {
+    const std::filesystem::path asset_path = base_dir / asset_name;
+    if (!std::filesystem::exists(asset_path)) {
+        throw std::runtime_error("Required installer asset is missing: " + to_utf8(asset_path.wstring()));
+    }
+    return asset_path;
+}
+
+void copy_optional_text_asset(
+    const std::filesystem::path& source_path,
+    const std::filesystem::path& destination_path
+) {
+    if (!std::filesystem::exists(source_path)) {
+        return;
+    }
+    copy_text_file_with_lf(source_path, destination_path);
+}
+
+void copy_optional_binary_asset(
+    const std::filesystem::path& source_path,
+    const std::filesystem::path& destination_path
+) {
+    if (!std::filesystem::exists(source_path)) {
+        return;
+    }
+    std::filesystem::copy_file(source_path, destination_path, std::filesystem::copy_options::overwrite_existing);
+}
+
+void try_prepare_release_support_asset(
+    const wchar_t* asset_name,
+    const wchar_t* checksum_name = nullptr
+) {
+    try {
+        const std::filesystem::path asset_path = download_release_asset(asset_name);
+        if (checksum_name != nullptr) {
+            const std::filesystem::path checksum_path = download_release_asset(checksum_name);
+            verify_release_asset_checksum(asset_path, checksum_path);
+        }
+    } catch (...) {
+        if (std::wstring(asset_name) == kManagedPathsScript) {
+            const std::filesystem::path local_asset = exe_dir() / asset_name;
+            if (std::filesystem::exists(local_asset)) {
+                copy_text_file_with_lf(local_asset, process_temp_dir() / asset_name);
+                const std::filesystem::path local_checksum = exe_dir() / kManagedPathsScriptChecksum;
+                copy_optional_binary_asset(local_checksum, process_temp_dir() / kManagedPathsScriptChecksum);
+                return;
+            }
+        }
+        throw;
+    }
+}
+
+}  // namespace
+
 std::filesystem::path exe_dir() {
     return std::filesystem::path(current_exe_path()).parent_path();
 }
@@ -153,12 +209,56 @@ std::filesystem::path download_helper_script() {
     return script_path;
 }
 
-std::filesystem::path resolve_helper_script() {
-    const std::filesystem::path local_script = exe_dir() / kHelperScript;
-    if (std::filesystem::exists(local_script)) {
-        return local_script;
+std::string install_source_name(const InstallSource install_source) {
+    switch (install_source) {
+        case InstallSource::local:
+            return "local";
+        case InstallSource::release:
+            return "release";
     }
-    return download_helper_script();
+    return "release";
+}
+
+std::wstring install_source_cli_flag(const InstallSource install_source) {
+    switch (install_source) {
+        case InstallSource::local:
+            return L"--local";
+        case InstallSource::release:
+            return L"--release";
+    }
+    return L"--release";
+}
+
+PreparedInstallerAssets prepare_installer_assets(const InstallSource install_source) {
+    PreparedInstallerAssets assets;
+    assets.install_source = install_source;
+
+    if (install_source == InstallSource::local) {
+        const std::filesystem::path root_dir = exe_dir();
+        require_asset_path(root_dir, kHelperScript);
+        require_asset_path(root_dir, kHelperScriptChecksum);
+        require_asset_path(root_dir, kManagedPathsScript);
+        require_asset_path(root_dir, kInstallBinary);
+        require_asset_path(root_dir, kInstallChecksum);
+        require_asset_path(root_dir, kSyncpssBinary);
+        require_asset_path(root_dir, kSyncpssChecksum);
+        require_asset_path(root_dir, kManifestAsset);
+        require_asset_path(root_dir, kManifestChecksum);
+        require_asset_path(root_dir, kMasterFingerprint);
+        require_asset_path(root_dir, L"uninstall_syncpss.sh");
+        require_asset_path(root_dir, L"uninstall_syncpss.sh.sha256");
+        assets.root_dir = root_dir;
+        assets.helper_script = root_dir / kHelperScript;
+        return assets;
+    }
+
+    const std::filesystem::path root_dir = process_temp_dir();
+    const std::filesystem::path helper_script = download_helper_script();
+    try_prepare_release_support_asset(kManagedPathsScript, kManagedPathsScriptChecksum);
+    copy_optional_text_asset(exe_dir() / kMaintainerHelperScript, root_dir / kMaintainerHelperScript);
+    assets.root_dir = root_dir;
+    assets.helper_script = helper_script;
+    return assets;
 }
 
 void copy_optional_windows_assets(const std::filesystem::path& app_dir) {

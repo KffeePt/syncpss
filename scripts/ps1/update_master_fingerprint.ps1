@@ -68,6 +68,7 @@ function Get-ReleaseMasterFingerprint {
         "bin\syncpss-linux-x86_64",
         "bin\install",
         "bin\installer.sh",
+        "bin\managed_paths.sh",
         "bin\uninstall_syncpss.sh"
     ) | ForEach-Object { Join-Path $ResolvedRepoRoot $_ }
 

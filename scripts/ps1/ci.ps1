@@ -2,7 +2,7 @@
 param(
     [string]$Distro = "",
     [string]$User = "",
-    [ValidateSet("local", "github")]
+    [ValidateSet("local", "release", "github")]
     [string]$InstallSource = "",
     [switch]$RunNow,
     [switch]$NonInteractive
@@ -214,7 +214,8 @@ function Invoke-WindowsInstallerStaging {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$DistroName,
-        [Parameter(Mandatory = $true)][string]$LinuxUser
+        [Parameter(Mandatory = $true)][string]$LinuxUser,
+        [Parameter(Mandatory = $true)][string]$InstallSource
     )
 
     $installerExe = Join-Path $RepoRoot "bin\syncpss-wsl-installer.exe"
@@ -222,13 +223,15 @@ function Invoke-WindowsInstallerStaging {
         throw "Missing build artifact: $installerExe"
     }
 
-    & $installerExe @(
+    $sourceFlag = if ($InstallSource -eq "local") { "--local" } else { "--release" }
+    $process = Start-Process -FilePath $installerExe -ArgumentList @(
         "--distro", $DistroName,
         "--user", $LinuxUser,
-        "--no-open-shell",
+        $sourceFlag,
         "--no-pause"
-    ) | Out-Host
-    return [int]$LASTEXITCODE
+    ) -PassThru -Wait
+
+    return [int]$process.ExitCode
 }
 
 function Start-WslSyncpassWindow {
@@ -255,7 +258,8 @@ function Start-WslInstallerWindow {
         [Parameter(Mandatory = $true)][string]$InstallSource
     )
 
-    $command = "cd ~/.syncpss/helpers && export PATH=`$HOME/.local/bin:/usr/local/bin:`$PATH; export TERM=`${TERM:-xterm-256color}; chmod u+x ~/.syncpss/helpers/installer.sh ~/.syncpss/helpers/uninstall_syncpss.sh 2>/dev/null || true; clear 2>/dev/null || true; printf '\nStarting syncpss installer inside WSL...\n\n'; SYNCPSS_FORCE_INSTALL=1 SYNCPSS_AUTO_ADVANCE_DEFAULTS=1 SYNCPSS_INSTALL_SOURCE=${InstallSource} bash ~/.syncpss/helpers/installer.sh; printf '\nThe syncpss installer window is staying open for review.\n'; exec bash"
+    $installFlag = if ($InstallSource -eq "local") { "--local" } else { "--release" }
+    $command = "cd ~/.syncpss/helpers && export PATH=`$HOME/.local/bin:/usr/local/bin:`$PATH; export TERM=`${TERM:-xterm-256color}; chmod u+x ~/.syncpss/helpers/installer.sh ~/.syncpss/helpers/uninstall_syncpss.sh 2>/dev/null || true; clear 2>/dev/null || true; printf '\nStarting syncpss installer inside WSL...\n\n'; set +e; SYNCPSS_FORCE_INSTALL=1 SYNCPSS_AUTO_ADVANCE_DEFAULTS=1 bash ~/.syncpss/helpers/installer.sh ${installFlag}; installer_exit=`$?; set -e; printf '\nInstaller exit code: %s\n' `"`$installer_exit`"; if [ `"`$installer_exit`" -eq 0 ]; then printf 'syncpss installer completed. This WSL window will stay open for review.\n\n'; else printf 'syncpss installer failed. Review the output above before retrying.\n\n'; fi; exec bash"
     Start-Process -FilePath "wsl.exe" -ArgumentList @(
         "-d", $DistroName,
         "-u", $LinuxUser,
@@ -300,6 +304,7 @@ function Get-LocalReleaseMasterFingerprint {
         "bin\syncpss-linux-x86_64",
         "bin\install",
         "bin\installer.sh",
+        "bin\managed_paths.sh",
         "bin\uninstall_syncpss.sh"
     ) | ForEach-Object { Join-Path $RepoRoot $_ }
 
@@ -365,7 +370,11 @@ function Select-InstallSource {
     param([string]$RequestedSource)
 
     if (-not [string]::IsNullOrWhiteSpace($RequestedSource)) {
-        return $RequestedSource.ToLowerInvariant()
+        $normalized = $RequestedSource.ToLowerInvariant()
+        if ($normalized -eq "github") {
+            return "release"
+        }
+        return $normalized
     }
 
     if ($NonInteractive) {
@@ -375,7 +384,7 @@ function Select-InstallSource {
     Write-Host ""
     Write-Title "Choose installer source for this CI run"
     Write-Input "  [1] Local Windows-built binaries (default)"
-    Write-Input "  [2] GitHub release channel"
+    Write-Input "  [2] Official release channel"
 
     while ($true) {
         Write-Input "Select source [1]"
@@ -384,7 +393,7 @@ function Select-InstallSource {
             return "local"
         }
         if ($selection -eq "2") {
-            return "github"
+            return "release"
         }
     }
 }
@@ -436,6 +445,7 @@ function Invoke-CiPipeline {
             (Join-Path $repoRoot "bin\install.sha256"),
             (Join-Path $repoRoot "bin\installer.sh"),
             (Join-Path $repoRoot "bin\installer.sh.sha256"),
+            (Join-Path $repoRoot "bin\managed_paths.sh"),
             (Join-Path $repoRoot "bin\uninstall_syncpss.sh"),
             (Join-Path $repoRoot "bin\uninstall_syncpss.sh.sha256"),
             (Join-Path $repoRoot "bin\manifest.xml"),
@@ -477,8 +487,8 @@ function Invoke-CiPipeline {
         throw "Purge helper exited with code $purgeExit"
     }
 
-    Write-Build "[3/3] Running the Windows WSL installer and staging rebuilt artifacts into ~/.syncpss/helpers..."
-    $stageExit = Invoke-WindowsInstallerStaging -RepoRoot $repoRoot -DistroName $selectedDistro -LinuxUser $selectedUser
+    Write-Build "[3/3] Opening the Windows WSL installer in a separate window and staging rebuilt artifacts into ~/.syncpss/helpers..."
+    $stageExit = Invoke-WindowsInstallerStaging -RepoRoot $repoRoot -DistroName $selectedDistro -LinuxUser $selectedUser -InstallSource $selectedInstallSource
     if ($stageExit -ne 0) {
         throw "Windows WSL installer exited with code $stageExit"
     }
@@ -486,43 +496,23 @@ function Invoke-CiPipeline {
     $stageDir = "\\wsl.localhost\$selectedDistro\home\$selectedUser\.syncpss\helpers"
     Write-Success "Staged fresh assets in $stageDir"
     Write-Title ("Installer test source: {0}" -f $selectedInstallSource)
+    Write-Title "The Windows WSL installer has taken over and opened installer.sh in a WSL window."
 
-    $shouldRun = $RunNow
-    if (-not $NonInteractive -and -not $RunNow) {
-        Write-Input "Run bash ~/.syncpss/helpers/installer.sh now? [Y/n]"
-        $answer = Read-Host
-        $shouldRun = [string]::IsNullOrWhiteSpace($answer) -or $answer -match '^(?i:y|yes)$'
+    if (-not $NonInteractive) {
+        Write-Input "Return here after the WSL installer window finishes, then press Enter to continue."
+        [void](Read-Host)
     }
 
-    if ($shouldRun) {
-        Write-Title "Opening the Linux installer in a separate WSL window."
-        Start-WslInstallerWindow `
-            -DistroName $selectedDistro `
-            -LinuxUser $selectedUser `
-            -InstallSource $selectedInstallSource
-
-        if (-not $NonInteractive) {
-            Write-Input "Return here after the WSL installer window finishes, then press Enter to continue."
-            [void](Read-Host)
+    $launchMode = Select-PostInstallLaunchMode
+    switch ($launchMode) {
+        "wsl" {
+            Start-WslSyncpassWindow -DistroName $selectedDistro -LinuxUser $selectedUser
         }
-
-        $launchMode = Select-PostInstallLaunchMode
-        switch ($launchMode) {
-            "wsl" {
-                Start-WslSyncpassWindow -DistroName $selectedDistro -LinuxUser $selectedUser
-            }
-            "start-menu" {
-                Start-SyncpssFromStartMenu
-            }
-            default {
-            }
+        "start-menu" {
+            Start-SyncpssFromStartMenu
         }
-    } else {
-        Write-Title "Opening a WSL window and starting installer.sh automatically instead of leaving a manual step."
-        Start-WslInstallerWindow `
-            -DistroName $selectedDistro `
-            -LinuxUser $selectedUser `
-            -InstallSource $selectedInstallSource
+        default {
+        }
     }
 
     Maybe-OfferDeployment -RepoRoot $repoRoot

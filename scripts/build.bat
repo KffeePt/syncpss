@@ -43,6 +43,8 @@ set "OUT_EXE=%BIN_DIR%\syncpss-wsl-installer.exe"
 set "OUT_SHA=%BIN_DIR%\syncpss-wsl-installer.exe.sha256"
 set "OUT_HELPER=%BIN_DIR%\installer.sh"
 set "OUT_HELPER_SHA=%BIN_DIR%\installer.sh.sha256"
+set "OUT_MANAGED_HELPER=%BIN_DIR%\managed_paths.sh"
+set "OUT_MANAGED_HELPER_SHA=%BIN_DIR%\managed_paths.sh.sha256"
 set "OUT_MAINTAINER_HELPER=%BIN_DIR%\maintainer_id.sh"
 set "OUT_UNINSTALL=%BIN_DIR%\uninstall_syncpss.sh"
 set "OUT_UNINSTALL_SHA=%BIN_DIR%\uninstall_syncpss.sh.sha256"
@@ -110,6 +112,12 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
     if not exist "%REPO_ROOT%\scripts\sh\maintainer_id.sh" (
         set "EXIT_CODE=1"
         echo [FAIL] Helper maintainer source not found: %REPO_ROOT%\scripts\sh\maintainer_id.sh
+        goto :fail
+    )
+
+    if not exist "%REPO_ROOT%\scripts\sh\managed_paths.sh" (
+        set "EXIT_CODE=1"
+        echo [FAIL] Helper managed-path source not found: %REPO_ROOT%\scripts\sh\managed_paths.sh
         goto :fail
     )
 
@@ -207,6 +215,22 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
     )
 
     powershell -NoLogo -NoProfile -Command ^
+      "$ErrorActionPreference='Stop'; $content=[System.IO.File]::ReadAllText('%REPO_ROOT%\scripts\sh\managed_paths.sh').Replace(\"`r`n\", \"`n\").Replace(\"`r\", \"`n\"); [System.IO.File]::WriteAllText('%OUT_MANAGED_HELPER%', $content, [System.Text.UTF8Encoding]::new($false))"
+    if errorlevel 1 (
+        set "EXIT_CODE=!ERRORLEVEL!"
+        echo [FAIL] Failed to copy managed_paths.sh into bin.
+        goto :fail
+    )
+
+    powershell -NoLogo -NoProfile -Command ^
+      "$ErrorActionPreference='Stop'; $sha=[System.Security.Cryptography.SHA256]::Create(); try { $stream=[System.IO.File]::OpenRead('%OUT_MANAGED_HELPER%'); try { $hashBytes=$sha.ComputeHash($stream) } finally { $stream.Dispose() } } finally { $sha.Dispose() }; $hash = ([System.BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant(); [System.IO.File]::WriteAllText('%OUT_MANAGED_HELPER_SHA%', $hash + '  managed_paths.sh')"
+    if errorlevel 1 (
+        set "EXIT_CODE=!ERRORLEVEL!"
+        echo [FAIL] Failed to write managed_paths.sh checksum.
+        goto :fail
+    )
+
+    powershell -NoLogo -NoProfile -Command ^
       "$ErrorActionPreference='Stop'; $content=[System.IO.File]::ReadAllText('%REPO_ROOT%\scripts\sh\uninstall_syncpss.sh').Replace(\"`r`n\", \"`n\").Replace(\"`r\", \"`n\"); [System.IO.File]::WriteAllText('%OUT_UNINSTALL%', $content, [System.Text.UTF8Encoding]::new($false))"
     if errorlevel 1 (
         set "EXIT_CODE=!ERRORLEVEL!"
@@ -227,6 +251,8 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
     echo   %OUT_SHA%
     echo   %OUT_HELPER%
     echo   %OUT_HELPER_SHA%
+    echo   %OUT_MANAGED_HELPER%
+    echo   %OUT_MANAGED_HELPER_SHA%
     echo   %OUT_MAINTAINER_HELPER%
     echo   %OUT_UNINSTALL%
     echo   %OUT_UNINSTALL_SHA%

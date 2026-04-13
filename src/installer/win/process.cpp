@@ -61,17 +61,73 @@ std::string strip_nuls(const std::string& value) {
     return cleaned;
 }
 
+bool contains_control_chars(const std::wstring& value) {
+    for (const wchar_t ch : value) {
+        if (ch < 32 || ch == 127) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void validate_wsl_distro_name_or_throw(const std::wstring& value) {
+    const std::wstring trimmed = trim(value);
+    if (trimmed.empty() || contains_control_chars(trimmed)) {
+        throw std::runtime_error("WSL distro name is empty or contains control characters");
+    }
+    if (trimmed.size() > 64U) {
+        throw std::runtime_error("WSL distro name is too long");
+    }
+    for (const wchar_t ch : trimmed) {
+        if (!(std::iswalnum(ch) != 0 || ch == L'-' || ch == L'_' || ch == L'.')) {
+            throw std::runtime_error("WSL distro name contains unsupported characters");
+        }
+    }
+}
+
+void validate_linux_username_or_throw(const std::wstring& value) {
+    const std::wstring trimmed = trim(value);
+    if (trimmed.empty() || contains_control_chars(trimmed)) {
+        throw std::runtime_error("Linux username is empty or contains control characters");
+    }
+    if (trimmed.size() > 32U) {
+        throw std::runtime_error("Linux username is too long");
+    }
+    if (trimmed.front() == L'-') {
+        throw std::runtime_error("Linux username cannot start with '-'");
+    }
+    for (const wchar_t ch : trimmed) {
+        if (!(std::iswalnum(ch) != 0 || ch == L'-' || ch == L'_' || ch == L'.')) {
+            throw std::runtime_error("Linux username contains unsupported characters");
+        }
+    }
+}
+
 std::wstring quote_arg(const std::wstring& arg) {
     if (arg.find_first_of(L" \t\"") == std::wstring::npos) {
         return arg;
     }
     std::wstring quoted = L"\"";
-    for (wchar_t ch : arg) {
-        if (ch == L'"') {
-            quoted += L"\\\"";
-        } else {
-            quoted += ch;
+    std::size_t backslash_count = 0;
+    for (const wchar_t ch : arg) {
+        if (ch == L'\\') {
+            ++backslash_count;
+            continue;
         }
+        if (ch == L'"') {
+            quoted.append(backslash_count * 2 + 1, L'\\');
+            quoted += L'"';
+            backslash_count = 0;
+            continue;
+        }
+        if (backslash_count > 0) {
+            quoted.append(backslash_count, L'\\');
+            backslash_count = 0;
+        }
+        quoted += ch;
+    }
+    if (backslash_count > 0) {
+        quoted.append(backslash_count * 2, L'\\');
     }
     quoted += L"\"";
     return quoted;

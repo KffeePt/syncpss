@@ -130,6 +130,28 @@ std::filesystem::path runtime_install_assets_directory() {
     return runtime_directory() / "install-assets";
 }
 
+std::filesystem::path runtime_helpers_directory() {
+    return runtime_directory() / "helpers";
+}
+
+std::filesystem::path runtime_helper_path(const std::string& helper_name) {
+    return runtime_helpers_directory() / helper_name;
+}
+
+std::filesystem::path resolve_runtime_helper_path(const std::string& helper_name) {
+    const std::filesystem::path preferred = runtime_install_assets_directory() / helper_name;
+    if (std::filesystem::exists(preferred)) {
+        return preferred;
+    }
+
+    const std::filesystem::path legacy = runtime_helper_path(helper_name);
+    if (std::filesystem::exists(legacy)) {
+        return legacy;
+    }
+
+    return preferred;
+}
+
 std::filesystem::path runtime_config_path() {
     return runtime_directory() / "config.json";
 }
@@ -218,6 +240,143 @@ std::filesystem::path install_bin_directory() {
 
 std::filesystem::path binary_install_path(const std::string& binary_name) {
     return install_bin_directory() / binary_name;
+}
+
+std::filesystem::path normalize_path(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return {};
+    }
+
+    std::error_code error;
+    std::filesystem::path normalized =
+        (path.is_absolute() ? path : std::filesystem::absolute(path, error)).lexically_normal();
+    if (error) {
+        normalized = std::filesystem::absolute(path).lexically_normal();
+    }
+
+    const bool exists = std::filesystem::exists(normalized, error);
+    if (!error && exists) {
+        const std::filesystem::path canonical = std::filesystem::weakly_canonical(normalized, error);
+        if (!error) {
+            return canonical.lexically_normal();
+        }
+    }
+
+    std::filesystem::path parent = normalized.parent_path();
+    if (parent.empty()) {
+        parent = normalized.root_path();
+    }
+    const std::filesystem::path canonical_parent = std::filesystem::weakly_canonical(parent, error);
+    if (!error) {
+        return (canonical_parent / normalized.filename()).lexically_normal();
+    }
+
+    return normalized.lexically_normal();
+}
+
+bool path_has_control_chars(const std::filesystem::path& path) {
+    const std::string rendered = path.string();
+    for (const unsigned char ch : rendered) {
+        if (ch < 32U || ch == 127U) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool path_is_root_like(const std::filesystem::path& path) {
+    const std::filesystem::path normalized = normalize_path(path);
+    if (normalized.empty()) {
+        return true;
+    }
+    if (normalized == normalized.root_path()) {
+        return true;
+    }
+
+    const std::string rendered = normalized.string();
+    return rendered == "/home" || rendered == "/mnt" || rendered == "/tmp" || rendered == "/usr" ||
+        rendered == "/etc" || rendered == "/var" || rendered == "/opt" || rendered == "/root" ||
+        rendered == "/proc" || rendered == "/sys" || rendered == "/dev" || rendered == "/run" ||
+        rendered == "/mnt/c" || rendered == "/mnt/d" || rendered == "/mnt/e" ||
+        rendered == "/mnt/c/Users" || rendered == "/mnt/d/Users" || rendered == "/mnt/e/Users";
+}
+
+bool path_is_windows_mounted(const std::filesystem::path& path) {
+    const std::string rendered = normalize_path(path).string();
+    return rendered.size() > 7U && rendered.rfind("/mnt/", 0) == 0 && std::isalpha(rendered[5]) != 0 &&
+        rendered[6] == '/';
+}
+
+bool path_is_within_root(const std::filesystem::path& candidate, const std::filesystem::path& root) {
+    const std::filesystem::path normalized_candidate = normalize_path(candidate);
+    const std::filesystem::path normalized_root = normalize_path(root);
+
+    auto candidate_it = normalized_candidate.begin();
+    auto root_it = normalized_root.begin();
+    for (; root_it != normalized_root.end(); ++root_it, ++candidate_it) {
+        if (candidate_it == normalized_candidate.end() || *candidate_it != *root_it) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_managed_user_path(const std::filesystem::path& path) {
+    return path_is_within_root(path, runtime_directory()) ||
+        path_is_within_root(path, persistent_settings_directory()) ||
+        path_is_within_root(path, default_store_path()) ||
+        path_is_within_root(path, get_real_home() / ".gnupg");
+}
+
+bool is_managed_system_path(const std::filesystem::path& path) {
+    const std::filesystem::path normalized = normalize_path(path);
+    return normalized == normalize_path("/usr/local/bin/syncpss") ||
+        normalized == normalize_path("/usr/local/bin/syncpass") ||
+        normalized == normalize_path("/etc/syncpass") ||
+        normalized == normalize_path("/mnt/keys");
+}
+
+bool is_managed_temp_path(const std::filesystem::path& path) {
+    return path_is_within_root(path, std::filesystem::temp_directory_path());
+}
+
+void require_managed_path(const std::filesystem::path& path, const std::string& action) {
+    if (path.empty()) {
+        throw std::runtime_error(action + " path is empty");
+    }
+    if (!path.is_absolute()) {
+        throw std::runtime_error(action + " path must be absolute: " + path.string());
+    }
+    if (path_has_control_chars(path)) {
+        throw std::runtime_error(action + " path contains control characters: " + path.string());
+    }
+    if (path_is_root_like(path)) {
+        throw std::runtime_error(action + " path is too broad to trust: " + path.string());
+    }
+    if (path_is_windows_mounted(path)) {
+        throw std::runtime_error(action + " path points into a Windows-mounted filesystem: " + path.string());
+    }
+    if (!is_managed_user_path(path) && !is_managed_system_path(path)) {
+        throw std::runtime_error(action + " path is outside the managed syncpss boundary: " + path.string());
+    }
+}
+
+void require_temporary_path(const std::filesystem::path& path, const std::string& action) {
+    if (path.empty()) {
+        throw std::runtime_error(action + " temporary path is empty");
+    }
+    if (!path.is_absolute()) {
+        throw std::runtime_error(action + " temporary path must be absolute: " + path.string());
+    }
+    if (path_has_control_chars(path)) {
+        throw std::runtime_error(action + " temporary path contains control characters: " + path.string());
+    }
+    if (path_is_root_like(path)) {
+        throw std::runtime_error(action + " temporary path is too broad to trust: " + path.string());
+    }
+    if (!is_managed_temp_path(path)) {
+        throw std::runtime_error(action + " temporary path is outside the allowed temp root: " + path.string());
+    }
 }
 
 bool is_safe_recursive_delete_target(const std::filesystem::path& path) {

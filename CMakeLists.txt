@@ -78,6 +78,7 @@ add_executable(syncpss
     src/util/config.cpp
     src/util/entry_metadata.cpp
     src/util/runtime_config.cpp
+    src/util/validation.cpp
 )
 
 target_include_directories(syncpss PRIVATE src ${CURSES_INCLUDE_DIR})
@@ -90,6 +91,7 @@ add_executable(syncpss_install
     src/util/paths.cpp
     src/util/config.cpp
     src/util/runtime_config.cpp
+    src/util/validation.cpp
 )
 
 target_include_directories(syncpss_install PRIVATE src)
@@ -97,4 +99,23 @@ target_link_libraries(syncpss_install PRIVATE nlohmann_json::nlohmann_json)
 target_compile_definitions(syncpss_install PRIVATE SYNCPSS_VERSION="${PROJECT_VERSION}")
 set_target_properties(syncpss_install PROPERTIES OUTPUT_NAME install)
 
+add_executable(syncpss_validation_smoke
+    tests/validation_smoke.cpp
+    src/util/validation.cpp
+)
+
+target_include_directories(syncpss_validation_smoke PRIVATE src)
+
 install(TARGETS syncpss syncpss_install DESTINATION /usr/local/bin)
+
+enable_testing()
+if(UNIX)
+    add_test(
+        NAME validation_smoke
+        COMMAND syncpss_validation_smoke
+    )
+    add_test(
+        NAME installer_qa
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_qa/run.sh
+    )
+endif()

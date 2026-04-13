@@ -6,6 +6,12 @@
 namespace syncpss::tui {
 using namespace detail;
 
+namespace {
+
+constexpr auto kClipboardLeaseDuration = std::chrono::seconds(30);
+
+}
+
 void TuiApp::initialize_curses() const {
     initscr();
     cbreak();
@@ -186,11 +192,12 @@ void TuiApp::show_clipboard_notice(const std::string& label, const syncpss::util
         apply_pair(kColorSuccess);
         mvprintw(3, 2, "%s copied to the clipboard.", label.c_str());
         clear_pair(kColorSuccess);
-        mvprintw(5, 2, "Clipboard will be cleared automatically after 60 seconds.");
+        mvprintw(5, 2, "Clipboard will be cleared automatically after 30 seconds.");
         mvprintw(7, 2, "Returning to the menu in 3 seconds. Press any key to dismiss now.");
     };
 
     render_notice_frame();
+    flushinp();
 
     int remaining_seconds = -1;
     bool status_shown = false;
@@ -387,7 +394,7 @@ std::string TuiApp::prompt_password_value(
             const std::size_t length = choice == '1' ? 16U : 32U;
             const std::string generated = store_->generate_password(length);
             const syncpss::util::ClipboardLease lease =
-                syncpss::util::copy_to_clipboard_with_expiry(generated, std::chrono::seconds(60));
+                syncpss::util::copy_to_clipboard_with_expiry(generated, kClipboardLeaseDuration);
             show_clipboard_notice(std::to_string(length) + "-character generated password", lease);
             return generated;
         }
