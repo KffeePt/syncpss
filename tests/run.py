@@ -225,6 +225,11 @@ def check_repo_structure() -> str:
     )
     ensure_text_contains(
         REPO_ROOT / "src" / "installer" / "win" / "shortcuts.cpp",
+        "runtime-helper-dir",
+        "Windows purge helper must support deferred runtime-directory cleanup",
+    )
+    ensure_text_contains(
+        REPO_ROOT / "src" / "installer" / "win" / "shortcuts.cpp",
         "$command = @'",
         "Windows runtime launcher must pass a literal bash command to WSL without PowerShell variable interpolation",
     )

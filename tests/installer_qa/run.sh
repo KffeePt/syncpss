@@ -347,6 +347,9 @@ if [[ "${joined}" == *"-File"* && "${joined}" == *"purge.ps1"* ]]; then
         local-app-assets)
             rm -rf "${SYNCPSSTEST_WINDOWS_ROOT}/AppData/Local/syncpss"
             ;;
+        runtime-helper-dir)
+            rm -rf "${SYNCPSSTEST_WINDOWS_ROOT}/.syncpss"
+            ;;
     esac
     exit 0
 fi
@@ -476,6 +479,9 @@ run_test "uninstall removes only exact allowed windows paths" run_in_uninstall "
 mkdir -p "$(dirname "${SHORTCUT_PATH}")" "${WINDOWS_RUNTIME_DIR}"
 touch "${SHORTCUT_PATH}" "${WINDOWS_RUNTIME_DIR}/purge.ps1"
 run_test "uninstall uses staged Windows purge helper for Start Menu shortcut" run_in_uninstall "rm(){ if [ \"\${1:-}\" = '-rf' ] && [ \"\${2:-}\" = '${SHORTCUT_PATH}' ]; then return 1; fi; command rm \"\$@\"; }; purge_windows_shortcut_assets; [ ! -e '${SHORTCUT_PATH}' ]"
+mkdir -p "${WINDOWS_RUNTIME_DIR}"
+touch "${WINDOWS_RUNTIME_DIR}/purge.ps1"
+run_test "uninstall uses staged Windows purge helper for runtime dir" run_in_uninstall "rm(){ if [ \"\${1:-}\" = '-rf' ] && [ \"\${2:-}\" = '${WINDOWS_RUNTIME_DIR}' ]; then return 1; fi; command rm \"\$@\"; }; purge_windows_shortcut_assets; [ ! -e '${WINDOWS_RUNTIME_DIR}' ]"
 mkdir -p "${WINDOWS_RUNTIME_DIR}"
 touch "${WINDOWS_RUNTIME_DIR}/runtime.txt"
 run_test "uninstall falls back to PowerShell when WSL rm is denied" run_in_uninstall "rm(){ if [ \"\${1:-}\" = '-rf' ] && [ \"\${2:-}\" = '${WINDOWS_RUNTIME_DIR}' ]; then return 1; fi; command rm \"\$@\"; }; remove_windows_path_if_safe '${WINDOWS_RUNTIME_DIR}' '${WINDOWS_RUNTIME_DIR}'; [ ! -e '${WINDOWS_RUNTIME_DIR}' ]"

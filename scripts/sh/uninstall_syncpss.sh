@@ -281,6 +281,7 @@ run_windows_purge_helper_if_present() {
     local expected_path="$2"
     local helper_path=""
     local helper_windows_path=""
+    local attempt=0
 
     if [ -z "${WINDOWS_USERPROFILE_PATH}" ]; then
         cache_windows_profile_paths
@@ -300,6 +301,17 @@ run_windows_purge_helper_if_present() {
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass \
         -File "${helper_windows_path}" \
         -Mode "${mode}" >/dev/null 2>&1 || return 1
+
+    if [ "${mode}" = "runtime-helper-dir" ]; then
+        while [ "${attempt}" -lt 50 ]; do
+            if [ ! -e "${expected_path}" ] && [ ! -L "${expected_path}" ]; then
+                return 0
+            fi
+            attempt=$((attempt + 1))
+            sleep 0.2
+        done
+        return 1
+    fi
 
     [ ! -e "${expected_path}" ] && [ ! -L "${expected_path}" ]
 }
@@ -487,20 +499,22 @@ purge_windows_shortcut_assets() {
         fi
     fi
 
-    if [ -n "${WINDOWS_USERPROFILE_PATH}" ]; then
-        runtime_dir="${WINDOWS_USERPROFILE_PATH}/.syncpss"
-        if [ -e "${runtime_dir}" ]; then
-            log "Removing Windows syncpss runtime helper directory..."
-            remove_windows_path_if_safe "${runtime_dir}" "${runtime_dir}" || cleanup_failed=1
-        fi
-    fi
-
     if [ -n "${WINDOWS_LOCALAPPDATA_PATH}" ]; then
         app_dir="${WINDOWS_LOCALAPPDATA_PATH}/syncpss"
         if [ -e "${app_dir}" ]; then
             log "Removing Windows syncpss local app assets..."
             if ! run_windows_purge_helper_if_present "local-app-assets" "${app_dir}"; then
                 remove_windows_path_if_safe "${app_dir}" "${app_dir}" || cleanup_failed=1
+            fi
+        fi
+    fi
+
+    if [ -n "${WINDOWS_USERPROFILE_PATH}" ]; then
+        runtime_dir="${WINDOWS_USERPROFILE_PATH}/.syncpss"
+        if [ -e "${runtime_dir}" ]; then
+            log "Removing Windows syncpss runtime helper directory..."
+            if ! run_windows_purge_helper_if_present "runtime-helper-dir" "${runtime_dir}"; then
+                remove_windows_path_if_safe "${runtime_dir}" "${runtime_dir}" || cleanup_failed=1
             fi
         fi
     fi

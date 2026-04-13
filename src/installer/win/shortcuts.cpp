@@ -517,7 +517,7 @@ exit 0
 
 const char* purge_syncpss_powershell_contents() {
     return R"(param(
-    [ValidateSet('start-menu-shortcut','local-app-assets')]
+    [ValidateSet('start-menu-shortcut','local-app-assets','runtime-helper-dir')]
     [string]$Mode = 'start-menu-shortcut'
 )
 
@@ -535,19 +535,73 @@ function Remove-ManagedPath([string]$LiteralPath) {
     Remove-Item -LiteralPath $LiteralPath -Recurse -Force -ErrorAction Stop
 }
 
+function Start-DeferredRuntimeRemoval([string]$LiteralPath) {
+    if ([string]::IsNullOrWhiteSpace($LiteralPath)) {
+        throw "Deferred runtime cleanup target is empty."
+    }
+
+    if (-not (Test-Path -LiteralPath $LiteralPath)) {
+        return
+    }
+
+    $workerPath = Join-Path $env:TEMP ("syncpss-purge-runtime-" + [Guid]::NewGuid().ToString("N") + ".ps1")
+    $workerScript = @'
+param(
+    [Parameter(Mandatory = $true)][string]$TargetPath,
+    [Parameter(Mandatory = $true)][string]$WorkerPath
+)
+
+$ErrorActionPreference = 'SilentlyContinue'
+
+for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    if (-not (Test-Path -LiteralPath $TargetPath)) {
+        break
+    }
+
+    try {
+        Remove-Item -LiteralPath $TargetPath -Recurse -Force -ErrorAction Stop
+    } catch {
+    }
+
+    if (-not (Test-Path -LiteralPath $TargetPath)) {
+        break
+    }
+
+    Start-Sleep -Milliseconds 200
+}
+
+Remove-Item -LiteralPath $WorkerPath -Force -ErrorAction SilentlyContinue
+'@
+
+    Set-Content -LiteralPath $workerPath -Value $workerScript -Encoding UTF8
+    Start-Process -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoLogo',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        $workerPath,
+        '-TargetPath',
+        $LiteralPath,
+        '-WorkerPath',
+        $workerPath
+    ) | Out-Null
+}
+
 switch ($Mode) {
     'start-menu-shortcut' {
         $targetPath = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\syncpss.lnk'
+        Remove-ManagedPath $targetPath
     }
     'local-app-assets' {
         $targetPath = Join-Path $env:LOCALAPPDATA 'syncpss'
+        Remove-ManagedPath $targetPath
     }
-    default {
-        throw "Unsupported purge mode: $Mode"
+    'runtime-helper-dir' {
+        $targetPath = Join-Path $env:USERPROFILE '.syncpss'
+        Start-DeferredRuntimeRemoval $targetPath
     }
 }
-
-Remove-ManagedPath $targetPath
 )";
 }
 
