@@ -278,21 +278,37 @@ function Get-GitSigningKey {
 
 function Get-GpgExecutablePath {
     $gpg = Get-Command gpg -ErrorAction SilentlyContinue
-    if ($null -eq $gpg) {
-        throw "gpg is required for signed tags and detached release signatures. Install Gpg4win on Windows and retry."
+    if ($null -ne $gpg) {
+        return $gpg.Source
     }
-    return $gpg.Source
+
+    $candidatePaths = @(
+        (Join-Path ${env:ProgramFiles} "GnuPG\bin\gpg.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "GnuPG\bin\gpg.exe"),
+        "C:\Program Files\Git\usr\bin\gpg.exe"
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($candidatePath in $candidatePaths) {
+        if (Test-Path -LiteralPath $candidatePath) {
+            return (Resolve-Path -LiteralPath $candidatePath).Path
+        }
+    }
+
+    throw "gpg is required for signed tags and detached release signatures. Install Gpg4win on Windows and retry."
 }
 
 function Get-GpgSecretKeyFingerprint {
-    param([AllowEmptyString()][string]$KeySpecifier = "")
+    param(
+        [Parameter(Mandatory = $true)][string]$GpgProgram,
+        [AllowEmptyString()][string]$KeySpecifier = ""
+    )
 
     $listArgs = @("--list-secret-keys", "--keyid-format=long", "--with-colons")
     if (-not [string]::IsNullOrWhiteSpace($KeySpecifier)) {
         $listArgs += $KeySpecifier
     }
 
-    $secretKeyOutput = & gpg @listArgs 2>$null
+    $secretKeyOutput = & $GpgProgram @listArgs 2>$null
     if ($LASTEXITCODE -ne 0) {
         return ""
     }
@@ -321,9 +337,11 @@ function Get-GpgSecretKeyFingerprint {
 }
 
 function Resolve-UsableGpgSigningKey {
+    param([Parameter(Mandatory = $true)][string]$GpgProgram)
+
     $configuredSigningKey = Get-GitSigningKey
     if (-not [string]::IsNullOrWhiteSpace($configuredSigningKey)) {
-        $configuredFingerprint = Get-GpgSecretKeyFingerprint -KeySpecifier $configuredSigningKey
+        $configuredFingerprint = Get-GpgSecretKeyFingerprint -GpgProgram $GpgProgram -KeySpecifier $configuredSigningKey
         if (-not [string]::IsNullOrWhiteSpace($configuredFingerprint)) {
             return [pscustomobject]@{
                 Fingerprint = $configuredFingerprint
@@ -333,7 +351,7 @@ function Resolve-UsableGpgSigningKey {
         }
     }
 
-    $defaultFingerprint = Get-GpgSecretKeyFingerprint
+    $defaultFingerprint = Get-GpgSecretKeyFingerprint -GpgProgram $GpgProgram
     if (-not [string]::IsNullOrWhiteSpace($defaultFingerprint)) {
         return [pscustomobject]@{
             Fingerprint = $defaultFingerprint
@@ -343,16 +361,16 @@ function Resolve-UsableGpgSigningKey {
     }
 
     if ([string]::IsNullOrWhiteSpace($configuredSigningKey)) {
-        throw "No usable Windows GPG secret key was found. Install Gpg4win, import your key, and retry."
+        throw "No usable Windows GPG secret key was found. GPG was checked at '$GpgProgram', but no secret signing key was visible. Import the secret key, not just the public certificate, and retry."
     }
 
-    throw "No usable Windows GPG secret key was found for git user.signingkey '$configuredSigningKey'. Install or import it through Gpg4win and retry."
+    throw "No usable Windows GPG secret key was found for git user.signingkey '$configuredSigningKey'. GPG was checked at '$GpgProgram'. Import the secret key through Gpg4win and retry."
 }
 
 function Assert-GpgSigningReady {
     $gpgProgram = Get-GpgExecutablePath
 
-    $resolvedKey = Resolve-UsableGpgSigningKey
+    $resolvedKey = Resolve-UsableGpgSigningKey -GpgProgram $gpgProgram
     if ($resolvedKey.UsedFallback -and -not [string]::IsNullOrWhiteSpace($resolvedKey.Requested)) {
         Write-Host ("Configured git user.signingkey '{0}' does not have a usable secret key. Falling back to Windows GPG key {1}." -f $resolvedKey.Requested, $resolvedKey.Fingerprint) -ForegroundColor Yellow
     }
@@ -376,12 +394,12 @@ function Write-DetachedReleaseSignatures {
         }
 
         Write-Host ("Signing asset: {0}" -f (Split-Path -Path $asset -Leaf)) -ForegroundColor Cyan
-        & gpg --yes --local-user $SigningInfo.Fingerprint --armor --detach-sign --output $signaturePath $asset
+        & $SigningInfo.GpgProgram --yes --local-user $SigningInfo.Fingerprint --armor --detach-sign --output $signaturePath $asset
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to create detached signature for $asset"
         }
 
-        & gpg --verify $signaturePath $asset | Out-Null
+        & $SigningInfo.GpgProgram --verify $signaturePath $asset | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Detached signature verification failed for $asset"
         }
