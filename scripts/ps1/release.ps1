@@ -450,8 +450,13 @@ function Remove-StaleReleaseSignatureFiles {
 }
 
 function Get-GitSigningKey {
-    if (-not [string]::IsNullOrWhiteSpace($env:SYNCPSS_RELEASE_GIT_SIGNINGKEY)) {
-        return $env:SYNCPSS_RELEASE_GIT_SIGNINGKEY.Trim()
+    $overrideItem = Get-Item -Path Env:\SYNCPSS_RELEASE_GIT_SIGNINGKEY -ErrorAction SilentlyContinue
+    if ($null -ne $overrideItem) {
+        $overrideValue = ([string]$overrideItem.Value).Trim()
+        if ($overrideValue -eq "__unset__") {
+            return ""
+        }
+        return $overrideValue
     }
 
     $signingKey = git config --get user.signingkey
@@ -488,6 +493,33 @@ function Get-GpgExecutablePath {
     }
 
     throw "gpg is required for signed tags and detached release signatures. Install Gpg4win on Windows and retry."
+}
+
+function Get-GpgConfExecutablePath {
+    param([Parameter(Mandatory = $true)][string]$GpgProgram)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:SYNCPSS_GPGCONF_EXECUTABLE)) {
+        $overridePath = $env:SYNCPSS_GPGCONF_EXECUTABLE.Trim()
+        if (-not (Test-Path -LiteralPath $overridePath)) {
+            throw "Configured gpgconf executable override '$overridePath' does not exist."
+        }
+        return (Resolve-Path -LiteralPath $overridePath).Path
+    }
+
+    $gpgConf = Get-Command gpgconf -ErrorAction SilentlyContinue
+    if ($null -ne $gpgConf) {
+        return $gpgConf.Source
+    }
+
+    $gpgDirectory = Split-Path -Parent $GpgProgram
+    if (-not [string]::IsNullOrWhiteSpace($gpgDirectory)) {
+        $siblingPath = Join-Path $gpgDirectory "gpgconf.exe"
+        if (Test-Path -LiteralPath $siblingPath) {
+            return (Resolve-Path -LiteralPath $siblingPath).Path
+        }
+    }
+
+    return ""
 }
 
 function Get-GpgSecretKeyFingerprints {
@@ -532,6 +564,129 @@ function Get-GpgSecretKeyFingerprints {
     }
 
     return [string[]]@($fingerprints.ToArray())
+}
+
+function ConvertTo-NativeCommandOutputText {
+    param([AllowNull()][object[]]$Output)
+
+    if ($null -eq $Output -or $Output.Count -eq 0) {
+        return ""
+    }
+
+    return ((($Output | Out-String) -replace "`0", "").Trim())
+}
+
+function Invoke-NativeCommandWithCapture {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $output = & $FilePath @Arguments 2>&1
+    return [pscustomobject]@{
+        ExitCode = [int]$LASTEXITCODE
+        Output = ConvertTo-NativeCommandOutputText -Output $output
+    }
+}
+
+function Start-GpgAgentIfAvailable {
+    param([Parameter(Mandatory = $true)][string]$GpgProgram)
+
+    try {
+        $gpgConfProgram = Get-GpgConfExecutablePath -GpgProgram $GpgProgram
+    } catch {
+        return ""
+    }
+
+    if ([string]::IsNullOrWhiteSpace($gpgConfProgram)) {
+        return ""
+    }
+
+    $launchResult = Invoke-NativeCommandWithCapture -FilePath $gpgConfProgram -Arguments @("--launch", "gpg-agent")
+    if ($launchResult.ExitCode -ne 0) {
+        return ""
+    }
+
+    return $gpgConfProgram
+}
+
+function Test-GpgTimeoutFailure {
+    param([AllowNull()][string]$Output)
+
+    if ([string]::IsNullOrWhiteSpace($Output)) {
+        return $false
+    }
+
+    return (
+        ($Output -match '(?im)\bsigning failed:\s*Timeout\b') -or
+        ($Output -match '(?im)\bOperation timed out\b') -or
+        ($Output -match '(?im)\bpinentry\b.*\btimeout\b') -or
+        ($Output -match '(?im)\btimeout\b.*\bpinentry\b')
+    )
+}
+
+function Get-GpgAgentRestartInstructions {
+    param([Parameter(Mandatory = $true)][string]$GpgProgram)
+
+    $gpgConfProgram = ""
+    try {
+        $gpgConfProgram = Get-GpgConfExecutablePath -GpgProgram $GpgProgram
+    } catch {
+        $gpgConfProgram = ""
+    }
+
+    if ([string]::IsNullOrWhiteSpace($gpgConfProgram)) {
+        return @(
+            "gpgconf --kill gpg-agent",
+            "gpgconf --launch gpg-agent"
+        )
+    }
+
+    return @(
+        ('"{0}" --kill gpg-agent' -f $gpgConfProgram),
+        ('"{0}" --launch gpg-agent' -f $gpgConfProgram)
+    )
+}
+
+function New-GpgFailureMessage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Action,
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][pscustomobject]$SigningInfo,
+        [Parameter(Mandatory = $true)][pscustomobject]$Result
+    )
+
+    $capturedOutput = if ([string]::IsNullOrWhiteSpace($Result.Output)) {
+        "<no gpg output captured>"
+    } else {
+        $Result.Output
+    }
+
+    if (Test-GpgTimeoutFailure -Output $capturedOutput) {
+        $agentRestartCommands = Get-GpgAgentRestartInstructions -GpgProgram $SigningInfo.GpgProgram
+        return @"
+GPG timed out while trying to $Action '$Target' with release signing key $($SigningInfo.Fingerprint).
+The signing key was detected correctly, but Gpg4win pinentry did not complete before gpg gave up.
+
+What to check on this Windows machine:
+1. Look for a hidden Gpg4win or Kleopatra pinentry window on the taskbar and approve it promptly.
+2. Make sure Gpg4win was installed with a pinentry program such as pinentry-basic or pinentry-qt.
+3. Restart the GPG agent, then retry:
+   $($agentRestartCommands[0])
+   $($agentRestartCommands[1])
+4. If the prompt still never appears, open Kleopatra once, unlock the key there, then rerun scripts\cd.bat.
+
+Raw gpg output:
+$capturedOutput
+"@
+    }
+
+    return @"
+Failed to $Action '$Target' with release signing key $($SigningInfo.Fingerprint).
+
+Raw gpg output:
+$capturedOutput
+"@
 }
 
 function Get-InstallerAuthenticodeSignatureStatus {
@@ -760,6 +915,9 @@ function Write-DetachedReleaseSignatures {
         [Parameter(Mandatory = $true)][string[]]$Assets
     )
 
+    $null = Start-GpgAgentIfAvailable -GpgProgram $SigningInfo.GpgProgram
+    Write-Host "Gpg4win may open a pinentry prompt on the first signature. If nothing appears, check for a hidden taskbar window." -ForegroundColor Yellow
+
     foreach ($asset in $Assets) {
         $signaturePath = "$asset.asc"
         if (Test-Path -LiteralPath $signaturePath) {
@@ -767,14 +925,24 @@ function Write-DetachedReleaseSignatures {
         }
 
         Write-Host ("Signing asset: {0}" -f (Split-Path -Path $asset -Leaf)) -ForegroundColor Cyan
-        & $SigningInfo.GpgProgram --yes --local-user $SigningInfo.Fingerprint --armor --detach-sign --output $signaturePath $asset
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create detached signature for $asset"
+        $signResult = Invoke-NativeCommandWithCapture -FilePath $SigningInfo.GpgProgram -Arguments @(
+            "--yes",
+            "--local-user", $SigningInfo.Fingerprint,
+            "--armor",
+            "--detach-sign",
+            "--output", $signaturePath,
+            $asset
+        )
+        if ($signResult.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $signaturePath) {
+                Remove-Item -LiteralPath $signaturePath -Force
+            }
+            throw (New-GpgFailureMessage -Action "create a detached signature for" -Target $asset -SigningInfo $SigningInfo -Result $signResult)
         }
 
-        & $SigningInfo.GpgProgram --verify $signaturePath $asset | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Detached signature verification failed for $asset"
+        $verifyResult = Invoke-NativeCommandWithCapture -FilePath $SigningInfo.GpgProgram -Arguments @("--verify", $signaturePath, $asset)
+        if ($verifyResult.ExitCode -ne 0) {
+            throw (New-GpgFailureMessage -Action "verify the detached signature for" -Target $asset -SigningInfo $SigningInfo -Result $verifyResult)
         }
     }
 }
@@ -791,14 +959,20 @@ function New-SignedReleaseTag {
         "tag", "-s", "-u", $SigningInfo.Fingerprint, $Tag, "-m", "Release $Tag"
     )
 
-    & git @tagArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create signed tag $Tag"
+    $null = Start-GpgAgentIfAvailable -GpgProgram $SigningInfo.GpgProgram
+
+    $tagResult = Invoke-NativeCommandWithCapture -FilePath "git" -Arguments $tagArgs
+    if ($tagResult.ExitCode -ne 0) {
+        throw (New-GpgFailureMessage -Action "create the signed tag for" -Target $Tag -SigningInfo $SigningInfo -Result $tagResult)
     }
 
-    & git -c gpg.format=openpgp -c "gpg.program=$($SigningInfo.GpgProgram)" tag -v $Tag | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Signed tag verification failed for $Tag"
+    $verifyTagResult = Invoke-NativeCommandWithCapture -FilePath "git" -Arguments @(
+        "-c", "gpg.format=openpgp",
+        "-c", "gpg.program=$($SigningInfo.GpgProgram)",
+        "tag", "-v", $Tag
+    )
+    if ($verifyTagResult.ExitCode -ne 0) {
+        throw (New-GpgFailureMessage -Action "verify the signed tag for" -Target $Tag -SigningInfo $SigningInfo -Result $verifyTagResult)
     }
 }
 

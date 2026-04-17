@@ -792,8 +792,13 @@ function Write-ReleaseSigningPolicy {
 function Get-RepoGitSigningKey {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
-    if (-not [string]::IsNullOrWhiteSpace($env:SYNCPSS_RELEASE_GIT_SIGNINGKEY)) {
-        return $env:SYNCPSS_RELEASE_GIT_SIGNINGKEY.Trim()
+    $overrideItem = Get-Item -Path Env:\SYNCPSS_RELEASE_GIT_SIGNINGKEY -ErrorAction SilentlyContinue
+    if ($null -ne $overrideItem) {
+        $overrideValue = ([string]$overrideItem.Value).Trim()
+        if ($overrideValue -eq "__unset__") {
+            return ""
+        }
+        return $overrideValue
     }
 
     $resolvedRepoRoot = Resolve-SyncpssRepoRoot -RepoRoot $RepoRoot
@@ -1116,7 +1121,7 @@ function Invoke-ReleaseSigningReadinessCheck {
     $originalRepoOverride = $env:SYNCPSS_RELEASE_REPO_ROOT
     $env:SYNCPSS_RELEASE_REPO_ROOT = $resolvedRepoRoot
     try {
-        & powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $releaseScriptPath -SigningReadiness
+        & powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $releaseScriptPath -SigningReadiness | Out-Host
         return [int]$LASTEXITCODE
     } finally {
         if ($null -eq $originalRepoOverride) {

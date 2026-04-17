@@ -45,6 +45,17 @@ function Assert-Contains {
     }
 }
 
+function Assert-FileContains {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedSubstring,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $text = [System.IO.File]::ReadAllText($Path)
+    Assert-Contains -Text $text -ExpectedSubstring $ExpectedSubstring -Message $Message
+}
+
 function New-SigningPolicyJson {
     param(
         [Parameter(Mandatory = $true)][string]$ActiveFingerprint,
@@ -83,7 +94,7 @@ function Invoke-ReadinessCheck {
         [string]$AllFingerprints = "",
         [string]$MatchFingerprints = "",
         [string]$WrongFingerprints = "",
-        [string]$ConfiguredSigningKey = "",
+        [string]$ConfiguredSigningKey = "__unset__",
         [string]$AuthenticodeStatus = "",
         [string]$AuthenticodeThumbprint = "",
         [string]$AuthenticodeSubject = ""
@@ -108,7 +119,9 @@ function Invoke-ReadinessCheck {
     foreach ($name in $overrides.Keys) {
         $item = Get-Item -Path ("Env:" + $name) -ErrorAction SilentlyContinue
         $originalValues[$name] = if ($null -eq $item) { $null } else { $item.Value }
-        if ([string]::IsNullOrWhiteSpace($overrides[$name])) {
+        if ($name -eq "SYNCPSS_RELEASE_GIT_SIGNINGKEY") {
+            Set-Item -Path ("Env:" + $name) -Value $overrides[$name]
+        } elseif ([string]::IsNullOrWhiteSpace($overrides[$name])) {
             Remove-Item -Path ("Env:" + $name) -ErrorAction SilentlyContinue
         } else {
             Set-Item -Path ("Env:" + $name) -Value $overrides[$name]
@@ -236,6 +249,11 @@ exit /b 0
         -AuthenticodeSubject "CN=syncpss release"
     Assert-True -Condition ($result.ExitCode -eq 0) -Message "Signing readiness should pass when the active release key and allowed Windows signer are both present."
     Assert-Contains -Text $result.Output -ExpectedSubstring "Release readiness:        PASS" -Message "Combined release readiness output should report PASS."
+
+    Assert-FileContains -Path $releaseScriptPath -ExpectedSubstring "GPG timed out while trying to" -Message "Release script should surface a dedicated timeout heading for GPG signing failures."
+    Assert-FileContains -Path $releaseScriptPath -ExpectedSubstring "Gpg4win pinentry did not complete before gpg gave up." -Message "Timeout guidance should explain that pinentry is the likely blocker."
+    Assert-FileContains -Path $releaseScriptPath -ExpectedSubstring "gpg-agent" -Message "Timeout guidance should include a GPG agent restart hint."
+    Assert-FileContains -Path $releaseScriptPath -ExpectedSubstring "hidden Gpg4win or Kleopatra pinentry window" -Message "Timeout guidance should mention the common hidden pinentry window failure mode."
 
     Write-Host "release signing policy checks passed"
     exit 0
