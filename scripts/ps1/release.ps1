@@ -576,6 +576,26 @@ function ConvertTo-NativeCommandOutputText {
     return ((($Output | Out-String) -replace "`0", "").Trim())
 }
 
+function ConvertTo-WindowsCommandLineArgument {
+    param([AllowNull()][string]$Value)
+
+    if ($null -eq $Value) {
+        return '""'
+    }
+
+    if ($Value.Length -eq 0) {
+        return '""'
+    }
+
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $quoted = $Value -replace '(\\*)"', '$1$1\"'
+    $quoted = $quoted -replace '(\\+)$', '$1$1'
+    return '"' + $quoted + '"'
+}
+
 function Invoke-NativeCommandWithCapture {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -588,10 +608,7 @@ function Invoke-NativeCommandWithCapture {
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.CreateNoWindow = $true
-
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add([string]$argument)
-    }
+    $startInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument -Value ([string]$_) }) -join " ")
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
