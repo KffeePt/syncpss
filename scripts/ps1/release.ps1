@@ -582,10 +582,29 @@ function Invoke-NativeCommandWithCapture {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $output = & $FilePath @Arguments 2>&1
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+
+    foreach ($argument in $Arguments) {
+        [void]$startInfo.ArgumentList.Add([string]$argument)
+    }
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+
+    [void]$process.Start()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+
+    $combinedOutput = @($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     return [pscustomobject]@{
-        ExitCode = [int]$LASTEXITCODE
-        Output = ConvertTo-NativeCommandOutputText -Output $output
+        ExitCode = [int]$process.ExitCode
+        Output = ConvertTo-NativeCommandOutputText -Output $combinedOutput
     }
 }
 
