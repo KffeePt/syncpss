@@ -491,10 +491,10 @@ run_syncpss() {
     "$target"
 }
 
-if command -v syncpss >/dev/null 2>&1; then
-    run_syncpss syncpss syncpss
-elif [ -x /usr/local/bin/syncpss ]; then
+if [ -x /usr/local/bin/syncpss ]; then
     run_syncpss /usr/local/bin/syncpss /usr/local/bin/syncpss
+elif command -v syncpss >/dev/null 2>&1; then
+    run_syncpss syncpss syncpss
 else
     echo 'syncpss is not installed yet. Run bash ~/.syncpss/helpers/installer.sh first.'
 fi

@@ -473,9 +473,23 @@ mkdir -p \
     "${HOME}/.password-store" \
     "${SYNCPSSTEST_WINDOWS_ROOT}"
 
+INSTALLER_SANDBOX_DIR="${TMP_ROOT}/installer-sandbox"
+SANDBOX_INSTALL_ROOT="${TMP_ROOT}/fake-system"
+mkdir -p "${INSTALLER_SANDBOX_DIR}" "${SANDBOX_INSTALL_ROOT}/usr/local/bin" "${SANDBOX_INSTALL_ROOT}/etc/syncpass"
+cp "${ROOT_DIR}/scripts/sh/managed_paths.sh" "${INSTALLER_SANDBOX_DIR}/managed_paths.sh"
+sed \
+    -e "s@/usr/local/bin@${SANDBOX_INSTALL_ROOT}/usr/local/bin@g" \
+    -e "s@/etc/syncpass@${SANDBOX_INSTALL_ROOT}/etc/syncpass@g" \
+    "${ROOT_DIR}/scripts/sh/installer.sh" > "${INSTALLER_SANDBOX_DIR}/installer.sh"
+
 run_in_installer() {
     local expression="$1"
     RUN_EXPR="${expression}" bash -lc "cd '${ROOT_DIR}' && unset SYNCPSS_PRIVATE_REPO_NAME || true && source scripts/sh/installer.sh && eval \"\$RUN_EXPR\""
+}
+
+run_in_installer_sandbox() {
+    local expression="$1"
+    RUN_EXPR="${expression}" bash -lc "cd '${ROOT_DIR}' && unset SYNCPSS_PRIVATE_REPO_NAME || true && source '${INSTALLER_SANDBOX_DIR}/installer.sh' && eval \"\$RUN_EXPR\""
 }
 
 run_in_uninstall() {
@@ -532,6 +546,23 @@ printf '{"install":{"binary":"/usr/local/bin/syncpss"}}\n' > "${HOME}/.syncpss/c
 run_test "runtime config nested field parses safely" run_in_installer "[ \"\$(runtime_config_string_field binary)\" = '/usr/local/bin/syncpss' ]"
 printf '{bad json\n' > "${HOME}/.syncpss/config.json"
 run_test "runtime config malformed json is rejected" bash -lc "! (cd '${ROOT_DIR}' && export PATH='${FAKE_BIN}':\$PATH && export HOME='${HOME}'; source scripts/sh/installer.sh && runtime_config_string_field binary)"
+rm -f "${HOME}/.syncpss/config.json"
+mkdir -p "${HOME}/.local/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${HOME}/.local/bin/syncpss"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${HOME}/.local/bin/syncpass"
+chmod +x "${HOME}/.local/bin/syncpss" "${HOME}/.local/bin/syncpass"
+run_test "installer removes stale local wrapper placeholders" run_in_installer "cleanup_stale_local_wrapper_placeholders; [ ! -e '${HOME}/.local/bin/syncpss' ] && [ ! -e '${HOME}/.local/bin/syncpass' ]"
+mkdir -p "${HOME}/.local/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${HOME}/.local/bin/syncpss"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${HOME}/.local/bin/syncpass"
+chmod +x "${HOME}/.local/bin/syncpss" "${HOME}/.local/bin/syncpass"
+run_test "local wrapper commands do not force repair state" bash -lc "(cd '${ROOT_DIR}' && export PATH='${HOME}/.local/bin:${FAKE_BIN}':\$PATH && export HOME='${HOME}'; source '${INSTALLER_SANDBOX_DIR}/installer.sh'; [ \"\$(installation_health_report)\" = 'missing' ])"
+mkdir -p "${HOME}/.local/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${HOME}/.local/bin/syncpss"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${HOME}/.local/bin/syncpass"
+chmod +x "${HOME}/.local/bin/syncpss" "${HOME}/.local/bin/syncpass"
+run_test "uninstall removes stale local wrapper placeholders" run_in_uninstall "cleanup_stale_local_wrapper_placeholders; [ ! -e '${HOME}/.local/bin/syncpss' ] && [ ! -e '${HOME}/.local/bin/syncpass' ]"
+rm -f "${HOME}/.local/bin/syncpss" "${HOME}/.local/bin/syncpass"
 
 run_test "malformed release json is ignored" bash -lc "(cd '${ROOT_DIR}' && export PATH='${FAKE_BIN}':\$PATH && export HOME='${HOME}' && export SYNCPSSTEST_CURL_MODE=malformed; source scripts/sh/installer.sh; [ -z \"\$(latest_release_tag || true)\" ])"
 run_test "managed paths support asset falls back to staged helper copy" bash -lc "(cd '${ROOT_DIR}' && export PATH='${FAKE_BIN}':\$PATH && export HOME='${HOME}' && export SYNCPSSTEST_CURL_MODE=missing-managed-paths; source scripts/sh/installer.sh; staged='${TMP_ROOT}/staged-assets'; mkdir -p \"\${staged}\" \"${TMP_ROOT}/downloaded\"; printf 'staged-managed-paths\n' > \"\${staged}/managed_paths.sh\"; printf 'staged-managed-paths-sha\n' > \"\${staged}/managed_paths.sh.sha256\"; SCRIPT_DIR=\"\${staged}\"; download_or_copy_support_asset 'v1.2.3' 'managed_paths.sh' '${TMP_ROOT}/downloaded/managed_paths.sh' && download_or_copy_support_asset 'v1.2.3' 'managed_paths.sh.sha256' '${TMP_ROOT}/downloaded/managed_paths.sh.sha256' && grep -Fq 'staged-managed-paths' '${TMP_ROOT}/downloaded/managed_paths.sh' && grep -Fq 'staged-managed-paths-sha' '${TMP_ROOT}/downloaded/managed_paths.sh.sha256')"

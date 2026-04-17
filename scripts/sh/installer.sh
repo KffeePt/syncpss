@@ -2049,12 +2049,12 @@ ensure_github_auth() {
     fi
 
     log "GitHub CLI is not authenticated yet. Starting gh auth login for GitHub.com over SSH..."
-    if gh auth login --hostname github.com --git-protocol ssh --web --clipboard; then
+    if gh auth login --hostname github.com --git-protocol ssh --web --clipboard --skip-ssh-key; then
         return
     fi
 
     warn "Retrying GitHub auth without automatic clipboard copy."
-    gh auth login --hostname github.com --git-protocol ssh --web
+    gh auth login --hostname github.com --git-protocol ssh --web --skip-ssh-key
 }
 
 ensure_git_identity() {
@@ -2116,20 +2116,24 @@ ensure_ssh_key() {
         created_new_key=1
     fi
 
-    if clipboard_copy "${pubkey_path}"; then
-        log "Copied SSH public key to your clipboard."
-    else
-        warn "Could not copy the SSH key automatically. Copy it manually from: ${pubkey_path}"
-    fi
+    verify_github_host_key
 
-    if [ "${created_new_key}" = "1" ]; then
+    if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -T git@github.com 2>&1 | grep -qi "successfully authenticated"; then
+        log "Access error: Your SSH key is not authorized on GitHub."
+        
+        if clipboard_copy "${pubkey_path}"; then
+            log "Copied SSH public key to your clipboard."
+        else
+            warn "Could not copy the SSH key automatically. Copy it manually from: ${pubkey_path}"
+        fi
+
         log
         log "Add this SSH key to GitHub before continuing:"
-        log "  Personal/account key for normal sync access:"
+        log "  Repo deploy key for your private password-store repo (Recommended):"
+        log "    1. Open your password-store repo > Settings > Deploy keys"
+        log "    2. Add deploy key, paste the key, and check 'Allow write access'"
+        log "  Or Personal account key for normal sync access:"
         log "    https://github.com/settings/keys"
-        log "  Repo deploy key for invited/read-only use:"
-        log "    Open your pass-store repo > Settings > Deploy keys"
-        log "    Use a deploy key when you want to share access without giving write access."
         log
         if [ "${INSTALLER_TUI_ENABLED}" -eq 1 ]; then
             menu_prompt \
@@ -2141,11 +2145,8 @@ ensure_ssh_key() {
             read -r -p "Press Enter after the key is authorized on GitHub..."
         fi
     else
-        info "Existing SSH key detected. Reusing it and continuing."
+        info "SSH key is authorized on GitHub. Reusing it and continuing."
     fi
-
-    verify_github_host_key
-    ssh -o StrictHostKeyChecking=yes -T git@github.com >/dev/null 2>&1 || true
 }
 
 verify_github_host_key() {
@@ -2921,13 +2922,38 @@ backup_current_gnupg_if_requested() {
     prune_old_gnupg_backups
 }
 
+is_stale_local_wrapper_placeholder() {
+    local path="$1"
+    local contents
+
+    [ -f "${path}" ] || return 1
+    contents="$(tr -d '\r' < "${path}" 2>/dev/null || true)"
+    [ "${contents}" = "#!/usr/bin/env bash
+exit 0" ]
+}
+
+cleanup_stale_local_wrapper_placeholders() {
+    local wrapper_path wrapper_name
+
+    for wrapper_name in syncpss syncpass; do
+        wrapper_path="${HOME}/.local/bin/${wrapper_name}"
+        if is_stale_local_wrapper_placeholder "${wrapper_path}"; then
+            log "Removing stale local wrapper placeholder at ${wrapper_path}"
+            rm -f "${wrapper_path}"
+        fi
+    done
+
+    rmdir "${HOME}/.local/bin" >/dev/null 2>&1 || true
+    hash -r 2>/dev/null || true
+}
+
 installation_exists_binary() {
     local configured_binary
     configured_binary="$(runtime_config_string_field "binary" || true)"
     if [ -n "${configured_binary}" ] && [ -x "${configured_binary}" ]; then
         return 0
     fi
-    [ -x /usr/local/bin/syncpss ] || [ -x /bin/syncpss ] || command_exists syncpss
+    [ -x /usr/local/bin/syncpss ] || [ -x /bin/syncpss ]
 }
 
 installation_exists_alias() {
@@ -2941,8 +2967,7 @@ installation_exists_alias() {
         fi
     fi
     [ -e /usr/local/bin/syncpass ] || [ -L /usr/local/bin/syncpass ] || \
-    [ -e /bin/syncpass ] || [ -L /bin/syncpass ] || \
-    command_exists syncpass
+    [ -e /bin/syncpass ] || [ -L /bin/syncpass ]
 }
 
 installation_exists_runtime() {
@@ -4561,7 +4586,9 @@ run_account_setup_wizard() {
     local key title body footer
 
     if [ "${INSTALLER_TUI_ENABLED}" -ne 1 ] || auto_accept_default_enabled; then
+        installer_tui_leave
         ensure_github_auth
+        installer_tui_enter
         ensure_git_identity
         return 0
     fi
@@ -4666,6 +4693,7 @@ main_update() {
     info "Updating installed syncpss from the published release channel."
 
     progress_step 1 3 "Preparing runtime directories"
+    cleanup_stale_local_wrapper_placeholders
     ensure_runtime_dir_ownership
     mark_step_result 1 ok
 
@@ -4699,6 +4727,7 @@ main_install() {
     info "Your encrypted password data lives in a separate private GitHub repo that belongs to you."
 
     progress_step 1 "${total_steps}" "Preparing syncpss runtime folders and Linux dependencies"
+    cleanup_stale_local_wrapper_placeholders
     handle_existing_install_state
     ensure_runtime_dir_ownership
     install_runtime_dependencies

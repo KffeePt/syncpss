@@ -51,6 +51,7 @@ set "OUT_UNINSTALL_SHA=%BIN_DIR%\uninstall_syncpss.sh.sha256"
 set "ICON_HELPER=%SCRIPT_DIR%ps1\generate_windows_icon.ps1"
 set "FINGERPRINT_HELPER=%SCRIPT_DIR%ps1\update_master_fingerprint.ps1"
 set "TEMP_EXE=%TEMP%\syncpss-wsl-installer-%RANDOM%%RANDOM%.exe"
+set "TEMP_RES=%TEMP%\syncpss-wsl-installer-res-%RANDOM%%RANDOM%.o"
 set "SLEEP_CMD=powershell -NoLogo -NoProfile -Command Start-Sleep -Seconds"
 
 cd /d "%REPO_ROOT%"
@@ -140,6 +141,13 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
 
     echo.
     echo Building Windows WSL installer...
+    windres "%WIN_INSTALLER_DIR%\installer.rc" -o "%TEMP_RES%"
+    if errorlevel 1 (
+        set "EXIT_CODE=!ERRORLEVEL!"
+        echo [FAIL] windres failed to compile installer manifest resource.
+        echo Make sure windres is available. It ships with MinGW-w64.
+        goto :fail
+    )
     g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -municode ^
       -static -static-libgcc -static-libstdc++ ^
       "%WIN_INSTALLER_DIR%\main.cpp" ^
@@ -150,6 +158,7 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
       "%WIN_INSTALLER_DIR%\assets.cpp" ^
       "%WIN_INSTALLER_DIR%\shortcuts.cpp" ^
       "%WIN_INSTALLER_DIR%\wsl_stage.cpp" ^
+      "%TEMP_RES%" ^
       -o "%TEMP_EXE%" ^
       -lbcrypt -lshell32 -lurlmon
     if errorlevel 1 (
@@ -181,6 +190,7 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
     )
 
     del /f /q "%TEMP_EXE%" >nul 2>nul
+    del /f /q "%TEMP_RES%" >nul 2>nul
 
     powershell -NoLogo -NoProfile -Command ^
       "$ErrorActionPreference='Stop'; $sha=[System.Security.Cryptography.SHA256]::Create(); try { $stream=[System.IO.File]::OpenRead('%OUT_EXE%'); try { $hashBytes=$sha.ComputeHash($stream) } finally { $stream.Dispose() } } finally { $sha.Dispose() }; $hash = ([System.BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant(); [System.IO.File]::WriteAllText('%OUT_SHA%', $hash + '  syncpss-wsl-installer.exe')"
@@ -284,6 +294,7 @@ exit /b 0
 
 :fail
 if exist "%TEMP_EXE%" del /f /q "%TEMP_EXE%" >nul 2>nul
+if exist "%TEMP_RES%" del /f /q "%TEMP_RES%" >nul 2>nul
 echo.
 echo [FAIL] Build exited with code %EXIT_CODE%.
 if /I not "%NO_PAUSE%"=="1" pause

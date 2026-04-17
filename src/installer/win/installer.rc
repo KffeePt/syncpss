@@ -1,0 +1,7 @@
+// Resource file for syncpss-wsl-installer.exe
+// Embeds the application manifest so Windows shows the UAC elevation prompt.
+
+#define RT_MANIFEST 24
+#define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "installer.manifest"

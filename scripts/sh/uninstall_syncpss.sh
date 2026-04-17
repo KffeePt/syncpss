@@ -244,6 +244,30 @@ remove_home_dir_if_safe() {
     rm -rf "${path}"
 }
 
+is_stale_local_wrapper_placeholder() {
+    local path="$1"
+    local contents
+
+    [ -f "${path}" ] || return 1
+    contents="$(tr -d '\r' < "${path}" 2>/dev/null || true)"
+    [ "${contents}" = "#!/usr/bin/env bash
+exit 0" ]
+}
+
+cleanup_stale_local_wrapper_placeholders() {
+    local wrapper_name wrapper_path
+
+    for wrapper_name in syncpss syncpass; do
+        wrapper_path="${LOCAL_BIN_DIR}/${wrapper_name}"
+        if is_stale_local_wrapper_placeholder "${wrapper_path}"; then
+            log "Removing stale local wrapper placeholder at ${wrapper_path}"
+            rm -f "${wrapper_path}"
+        fi
+    done
+
+    rmdir "${LOCAL_BIN_DIR}" >/dev/null 2>&1 || true
+}
+
 remove_windows_path_if_safe() {
     local path="$1"
     local windows_path=""
@@ -682,7 +706,8 @@ main() {
     fi
 
     log
-    log "Local wrapper commands under ${LOCAL_BIN_DIR} are outside the managed syncpss boundary and will be left untouched."
+    cleanup_stale_local_wrapper_placeholders
+    log "Custom local wrapper commands under ${LOCAL_BIN_DIR} are outside the managed syncpss boundary and will be left untouched."
 
     log "Removing system binaries..."
     remove_system_path "${GLOBAL_BIN_DIR}/syncpss"
