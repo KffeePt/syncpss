@@ -22,10 +22,10 @@
 ## Maintainer-Only Release Fingerprint Flow
 
 - Public contributors do not need any maintainer ID.
-- The maintainer-side source of truth is `config/maintainer_id.sha256`.
-- Maintainer release tooling reads the plaintext maintainer ID from the OS-level `SYNCPSS_MAINTAINER_ID` variable only.
-- If `SYNCPSS_MAINTAINER_ID` is missing during `scripts\cd.bat`, the Windows flow now bootstraps it from `config\maintainer_id.sha256`:
-  enter the existing maintainer ID to persist it for the current Windows user, or rotate it intentionally.
+- `config/maintainer_id.sha256` is the repo-side SHA-256 verifier, not the plaintext maintainer ID.
+- Maintainer release tooling reads the plaintext maintainer ID from `SYNCPSS_MAINTAINER_ID`, `%USERPROFILE%\.config\syncpss\maintainer-id.env`, or `%USERPROFILE%\.config\syncpss\release.identity`.
+- During `scripts\cd.bat`, the Windows flow auto-loads only those plaintext sources, validates that the maintainer ID is exactly 32 alphanumeric characters, checks it against `config/maintainer_id.sha256`, and then persists it into the current Windows user's environment.
+- If only `config/maintainer_id.sha256` exists, the flow stops with an error because the plaintext maintainer ID cannot be reconstructed from a SHA-256 hash.
 - Use `scripts\set_fingerprint.bat` on Windows or `bash scripts/sh/set_fingerprint.sh` on Linux/WSL to set, remove, or rotate it.
 - Release publishing also requires a usable Windows GPG secret key because release tags are now GPG-signed and the main downloadable release assets get detached `.asc` signatures. On Windows, install or import the signing key through Gpg4win before publishing.
 - Runtime fingerprint verification is separate: installers stage `master_fingerprint.sha256` into `~/.syncpss/config/master_fingerprint.sha256`, and the TUI verifies against that local file.

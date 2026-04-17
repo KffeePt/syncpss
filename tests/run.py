@@ -72,6 +72,10 @@ def main() -> int:
             "PowerShell syntax lint",
             lambda: lint_powershell_files(runner, powershell),
         )
+        runner.run_step(
+            "Maintainer bootstrap test",
+            lambda: run_maintainer_bootstrap_test(runner, powershell),
+        )
         runner.run_step("Batch entrypoint lint", lint_batch_files)
         runner.run_step("XML manifest lint", lint_xml_files)
 
@@ -385,6 +389,23 @@ def lint_batch_files() -> str:
             )
 
     return f"{len(batch_files)} batch files"
+
+
+def run_maintainer_bootstrap_test(runner: TestRunner, powershell: str) -> str:
+    runner.run_command(
+        "maintainer bootstrap",
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "tests/maintainer_bootstrap.ps1",
+        ],
+        cwd=REPO_ROOT,
+    )
+    return "tests/maintainer_bootstrap.ps1"
 
 
 def lint_xml_files() -> str:

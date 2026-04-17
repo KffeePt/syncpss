@@ -2,20 +2,27 @@
 
 ## Maintainer Release Fingerprint Flow
 
-Maintainer release verification no longer depends on a repo-local `.env` or on
-any legacy identity file.
+Maintainer release verification reads the plaintext maintainer ID from one of
+these plaintext maintainer sources:
 
-Release scripts read the plaintext maintainer ID from the OS-level
-`SYNCPSS_MAINTAINER_ID` variable only.
+- the OS-level `SYNCPSS_MAINTAINER_ID` variable
+- `%USERPROFILE%\.config\syncpss\maintainer-id.env`
+- `%USERPROFILE%\.config\syncpss\release.identity`
 
 The repo-side source of truth is:
 
 - `config/maintainer_id.sha256`
 
+`config\maintainer_id.sha256` stores only the SHA-256 verifier, not the
+plaintext maintainer ID, so the Windows release flow cannot reconstruct the
+maintainer ID from that file alone.
+
 If `SYNCPSS_MAINTAINER_ID` is missing during `scripts\cd.bat`, the Windows
-release flow now bootstraps it from `config\maintainer_id.sha256`: enter the
-existing maintainer ID to persist it for the current Windows user, or rotate it
-intentionally.
+release flow auto-loads the first plaintext maintainer file it finds, validates
+that the value is exactly 32 alphanumeric characters, checks it against
+`config\maintainer_id.sha256`, and then persists it for the current Windows
+user. If no plaintext maintainer source exists, the flow fails with a direct
+error instead of prompting for manual entry.
 
 Maintainers can manage it directly with:
 

@@ -811,6 +811,166 @@ fi
     }
 }
 
+function Get-ReleaseCommitPrefix {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    return "[syncpss: release v${Version}: "
+}
+
+function Get-ReleaseCommitSummary {
+    param([AllowEmptyString()][string]$Message)
+
+    $trimmed = if ($null -eq $Message) { "" } else { $Message.Trim() }
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return "release prep"
+    }
+
+    if ($trimmed -match '^\[syncpss: release v[^:]+:\s*(.*?)\]$') {
+        $summary = $Matches[1].Trim()
+        if (-not [string]::IsNullOrWhiteSpace($summary)) {
+            return $summary
+        }
+    }
+
+    return $trimmed
+}
+
+function ConvertTo-ReleaseCommitMessage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [AllowEmptyString()][string]$Summary
+    )
+
+    $resolvedSummary = Get-ReleaseCommitSummary -Message $Summary
+    return ((Get-ReleaseCommitPrefix -Version $Version) + $resolvedSummary + "]")
+}
+
+function Prompt-ReleaseCommitMessage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [AllowEmptyString()][string]$DefaultSummary,
+        [Parameter(Mandatory = $true)][string]$PromptMessage
+    )
+
+    $resolvedSummary = Get-ReleaseCommitSummary -Message $DefaultSummary
+    $defaultMessage = ConvertTo-ReleaseCommitMessage -Version $Version -Summary $resolvedSummary
+    if ($NonInteractive) {
+        return $defaultMessage
+    }
+
+    Write-Host ("Commit message: {0}" -f $defaultMessage) -ForegroundColor Cyan
+    $enteredSummary = Read-Host "$PromptMessage [$resolvedSummary]"
+    if ([string]::IsNullOrWhiteSpace($enteredSummary)) {
+        $enteredSummary = $resolvedSummary
+    }
+
+    $commitMessage = ConvertTo-ReleaseCommitMessage -Version $Version -Summary $enteredSummary
+    Write-Host ("Using commit message: {0}" -f $commitMessage) -ForegroundColor Cyan
+    return $commitMessage
+}
+
+function Test-CanRecommitLastCommit {
+    git rev-parse --verify HEAD~1 | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+
+function Get-LastCommitMessage {
+    $message = git log -1 --pretty=%B
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read the last commit message."
+    }
+
+    return (($message | Out-String).Trim())
+}
+
+function Test-ManifestUpdatedAtOnlyWorktreeChange {
+    param([Parameter(Mandatory = $true)][string[]]$StatusLines)
+
+    $normalizedStatus = @(
+        $StatusLines |
+            ForEach-Object { ($_ | Out-String).TrimEnd() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    if ($normalizedStatus.Count -ne 1) {
+        return $false
+    }
+
+    $statusEntry = $normalizedStatus[0]
+    if ($statusEntry.Length -lt 4) {
+        return $false
+    }
+
+    $path = $statusEntry.Substring(3).Trim()
+    if ($path -ne "manifest.xml") {
+        return $false
+    }
+
+    $diffLines = git diff --no-ext-diff --no-color --unified=0 HEAD -- manifest.xml
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to inspect manifest.xml changes."
+    }
+
+    $contentLines = @(
+        $diffLines |
+            ForEach-Object { ($_ | Out-String).TrimEnd() } |
+            Where-Object {
+                (-not [string]::IsNullOrWhiteSpace($_)) -and
+                ($_ -notmatch '^(diff --git|index |--- |\+\+\+ |@@ )')
+            }
+    )
+
+    if ($contentLines.Count -ne 2) {
+        return $false
+    }
+
+    return (
+        ($contentLines[0] -match '^\-\s*<updated_at>.*</updated_at>$') -and
+        ($contentLines[1] -match '^\+\s*<updated_at>.*</updated_at>$')
+    )
+}
+
+function Invoke-ManifestOnlyRecommitFlow {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    $lastCommitMessage = Get-LastCommitMessage
+    Write-Host "Only manifest.xml changed, and the diff is just the updated_at timestamp." -ForegroundColor Yellow
+    Write-Host ("Last commit message: {0}" -f $lastCommitMessage) -ForegroundColor Cyan
+
+    if (-not (Prompt-YesNo -Message "Soft-reset the last commit and recommit it for v$Version?" -DefaultYes $true)) {
+        return $false
+    }
+
+    git reset --soft HEAD~1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to soft-reset the last commit."
+    }
+
+    $defaultSummary = Get-ReleaseCommitSummary -Message $lastCommitMessage
+    while ($true) {
+        Write-Host "  [1] Use the last commit message"
+        Write-Host "  [2] Enter a new release summary"
+        $selection = Read-Host "Choose commit message flow [1]"
+        if ([string]::IsNullOrWhiteSpace($selection) -or $selection -eq "1") {
+            $commitMessage = ConvertTo-ReleaseCommitMessage -Version $Version -Summary $defaultSummary
+            Write-Host ("Using commit message: {0}" -f $commitMessage) -ForegroundColor Cyan
+            break
+        }
+        if ($selection -eq "2") {
+            $commitMessage = Prompt-ReleaseCommitMessage -Version $Version -DefaultSummary $defaultSummary -PromptMessage "Release commit summary"
+            break
+        }
+        Write-Host "Invalid selection." -ForegroundColor Red
+    }
+
+    git commit -m $commitMessage
+    if ($LASTEXITCODE -ne 0) {
+        throw "git commit failed after the soft reset."
+    }
+
+    return $true
+}
+
 function Ensure-CleanOrCommit {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -830,6 +990,19 @@ function Ensure-CleanOrCommit {
         return
     }
 
+    if ((-not $NonInteractive) -and (Test-CanRecommitLastCommit) -and (Test-ManifestUpdatedAtOnlyWorktreeChange -StatusLines $status)) {
+        if (Invoke-ManifestOnlyRecommitFlow -Version $ReleaseVersion) {
+            $status = git status --short
+            if ($LASTEXITCODE -ne 0) {
+                throw "git status failed after recommit"
+            }
+            if ([string]::IsNullOrWhiteSpace(($status -join "`n"))) {
+                return
+            }
+            throw "Worktree is still dirty after recommitting. Resolve the remaining changes and retry."
+        }
+    }
+
     Write-Host
     Write-Host "Working tree has uncommitted changes:" -ForegroundColor Yellow
     $status | ForEach-Object { Write-Host "  $_" }
@@ -844,11 +1017,7 @@ function Ensure-CleanOrCommit {
         throw "git add -A failed"
     }
 
-    $defaultMessage = "syncpss: release v$ReleaseVersion"
-    $commitMessage = Read-Host "Commit message [$defaultMessage]"
-    if ([string]::IsNullOrWhiteSpace($commitMessage)) {
-        $commitMessage = $defaultMessage
-    }
+    $commitMessage = Prompt-ReleaseCommitMessage -Version $ReleaseVersion -DefaultSummary "release prep" -PromptMessage "Release commit summary"
 
     git commit -m $commitMessage
     if ($LASTEXITCODE -ne 0) {
@@ -1147,7 +1316,7 @@ function Commit-ReleaseMetadataIfNeeded {
         return
     }
 
-    git commit -m "syncpss: refresh release metadata for v$ReleaseVersion"
+    git commit -m "[syncpss: release v${ReleaseVersion}: refresh release metadata]"
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to commit refreshed release metadata."
     }
