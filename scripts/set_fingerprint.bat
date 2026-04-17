@@ -20,9 +20,9 @@ powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%ps1\set
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 if "%EXIT_CODE%"=="0" (
-    echo [OK] Maintainer ID manager closed.
+    echo [OK] Release identity manager closed.
 ) else (
-    echo [FAIL] Maintainer ID manager exited with code %EXIT_CODE%.
+    echo [FAIL] Release identity manager exited with code %EXIT_CODE%.
 )
 if /I not "%NO_PAUSE%"=="1" pause
 exit /b %EXIT_CODE%

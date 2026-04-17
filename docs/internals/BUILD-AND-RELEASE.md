@@ -12,6 +12,7 @@ these plaintext maintainer sources:
 The repo-side source of truth is:
 
 - `config/maintainer_id.sha256`
+- `config/signing_policy.json`
 
 `config\maintainer_id.sha256` stores only the SHA-256 verifier, not the
 plaintext maintainer ID, so the Windows release flow cannot reconstruct the
@@ -31,6 +32,61 @@ Maintainers can manage it directly with:
 
 Those helpers can set, remove, or rotate the maintainer ID and keep the repo's
 expected maintainer hash aligned with the current value.
+On Windows, `scripts\set_fingerprint.bat` now opens the release identity
+manager, which also shows the current signing-policy state, lets you choose the
+active release signing key from the detected Windows GPG secret keys, rotates
+that key into verify-only history when needed, and syncs `git user.signingkey`
+for the repo automatically.
+
+## Release Signing Architecture
+
+Official `syncpss` releases use a repo-tracked signing policy at:
+
+- `config/signing_policy.json`
+
+That policy controls:
+
+- the single active OpenPGP release signing fingerprint
+- the small verify-only fingerprint set reserved for historical release verification
+- the GitHub account expected to publish verified release signatures
+- the future Windows Authenticode policy for the installer `.exe`
+
+Recommended maintainer custody model:
+
+1. Keep the OpenPGP primary key offline for certification and recovery only.
+2. Import only a dedicated release signing subkey onto the canonical Windows release PC.
+3. Keep one encrypted offline backup of that release signing subkey.
+4. Rotate the release fingerprint and update `config/signing_policy.json` if the release PC and encrypted backup are both lost.
+
+The release flow enforces the active fingerprint from `config/signing_policy.json`.
+It refuses to publish if:
+
+- `gpg.exe` cannot be found
+- no secret signing key is visible in the Windows keyring
+- the active release fingerprint is missing
+- `git user.signingkey` resolves to a different fingerprint
+- the signing policy is malformed or still uses the placeholder fingerprint
+
+Historical fingerprints listed under `gpg.verify_only_fingerprints` are for
+verification tooling only. They are not allowed to publish new releases.
+
+### Signing readiness helper
+
+Before publishing, verify the Windows release machine with:
+
+- `scripts\cd.bat --signing-readiness`
+- `powershell -File scripts\ps1\release.ps1 -SigningReadiness`
+
+That helper prints:
+
+- the resolved `gpg.exe` path
+- the detected Windows secret signing fingerprints
+- the active policy fingerprint
+- the final pass/fail signing readiness status
+
+The same readiness report is available from option `[6]` inside
+`scripts\set_fingerprint.bat`, so the maintainer can validate the canonical
+release PC without leaving the identity manager.
 
 ## Runtime Master Fingerprint
 
@@ -68,7 +124,7 @@ The compile cache/build tree lives under the Windows temp directory, not in the
 repo. The repo-local `bin/` folder is the release staging area.
 
 The orchestration lives in
-[scripts/ps1/build.ps1](C:/Users/santi/Documents/GitHub/syncpss/scripts/ps1/build.ps1).
+[scripts/ps1/build.ps1](../../../scripts/ps1/build.ps1).
 
 Supported modes:
 
@@ -99,7 +155,7 @@ The public release path can also be pinned to a specific tag with
 
 ### Windows release entrypoint
 
-[release.ps1](C:/Users/santi/Documents/GitHub/syncpss/scripts/ps1/release.ps1)
+[release.ps1](../../../scripts/ps1/release.ps1)
 is the authoritative release script on Windows.
 
 It:
@@ -173,7 +229,7 @@ password-store repo.
 
 ## CI
 
-[pr-checks.yml](../.github/workflows/pr-checks.yml) runs the shared validation workflow on pushes, pull requests, and manual dispatch.
+[pr-checks.yml](../../.github/workflows/pr-checks.yml) runs the shared validation workflow on pushes, pull requests, and manual dispatch.
 
 The required job names are:
 
@@ -188,18 +244,37 @@ GitHub Actions do not publish releases. The authoritative release flow is:
 
 ## Signing prerequisites
 
-Release publishing now requires a usable local GPG secret key.
+Release publishing now requires a usable local GPG release signing subkey.
 
 Recommended maintainer setup:
 
 1. Ensure `gpg` is installed.
-2. Ensure `git config user.signingkey` points at the intended OpenPGP key, or make sure your default secret key is the right one.
-3. Verify the key locally before releasing:
-   `gpg --list-secret-keys --keyid-format=long`
-4. Let the release script create the signed tag and detached asset signatures automatically.
+2. Update `config/signing_policy.json` so `gpg.active_release_fingerprint` and `gpg.allowed_release_fingerprints` contain the intended release signing fingerprint.
+3. Ensure `git config user.signingkey` points at that exact release signing fingerprint, or leave it unset and let the policy choose the active fingerprint.
+4. Verify the release machine before publishing:
+   `scripts\cd.bat --signing-readiness`
+5. Let the release script create the signed tag and detached asset signatures automatically.
 
 On Windows, release publishing now expects the signing key to be available in
 the native Windows GPG environment, for example through Gpg4win.
+
+## Windows installer code-signing
+
+`config/signing_policy.json` also reserves policy for Windows Authenticode
+signing:
+
+- `windows_codesign.phase`
+- `windows_codesign.required`
+- `windows_codesign.allowed_thumbprints`
+- `windows_codesign.subject_hint`
+
+Phase 1 keeps Authenticode optional. Phase 2 makes it a release requirement for
+`bin\syncpss-wsl-installer.exe`. When `windows_codesign.required` is set to
+`true`, the release flow and the signing readiness helper both require:
+
+- a built `bin\syncpss-wsl-installer.exe`
+- a valid Authenticode signature on that file
+- a signer thumbprint listed in `windows_codesign.allowed_thumbprints`
 
 That keeps the released Linux artifacts tied to your local WSL environment
 instead of a GitHub-hosted runner, while still letting GitHub validate pushes

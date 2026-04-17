@@ -76,6 +76,14 @@ def main() -> int:
             "Maintainer bootstrap test",
             lambda: run_maintainer_bootstrap_test(runner, powershell),
         )
+        runner.run_step(
+            "Release signing policy test",
+            lambda: run_release_signing_policy_test(runner, powershell),
+        )
+        runner.run_step(
+            "Release identity manager test",
+            lambda: run_release_identity_manager_test(runner, powershell),
+        )
         runner.run_step("Batch entrypoint lint", lint_batch_files)
         runner.run_step("XML manifest lint", lint_xml_files)
 
@@ -105,8 +113,11 @@ def check_repo_structure() -> str:
         REPO_ROOT / "tests" / "framework" / "__init__.py",
         REPO_ROOT / "tests" / "framework" / "runner.py",
         REPO_ROOT / "tests" / "installer_qa" / "run.sh",
+        REPO_ROOT / "tests" / "release_identity_manager.ps1",
+        REPO_ROOT / "tests" / "release_signing_policy.ps1",
         REPO_ROOT / "scripts" / "run_tests.bat",
         REPO_ROOT / "scripts" / "sh" / "managed_paths.sh",
+        REPO_ROOT / "config" / "signing_policy.json",
         REPO_ROOT / "src" / "util" / "validation.hpp",
         REPO_ROOT / "src" / "util" / "validation.cpp",
     )
@@ -176,6 +187,16 @@ def check_repo_structure() -> str:
         REPO_ROOT / "scripts" / "build.bat",
         "managed_paths.sh",
         "Windows packaging must include managed_paths.sh for staged installer helpers",
+    )
+    ensure_text_contains(
+        REPO_ROOT / "scripts" / "ps1" / "release.ps1",
+        "signing_policy.json",
+        "Release flow must resolve a repo-tracked signing policy file",
+    )
+    ensure_text_contains(
+        REPO_ROOT / "scripts" / "ps1" / "release.ps1",
+        "SigningReadiness",
+        "Release flow must expose a signing readiness helper mode",
     )
     ensure_text_contains(
         REPO_ROOT / "scripts" / "sh" / "installer.sh",
@@ -406,6 +427,40 @@ def run_maintainer_bootstrap_test(runner: TestRunner, powershell: str) -> str:
         cwd=REPO_ROOT,
     )
     return "tests/maintainer_bootstrap.ps1"
+
+
+def run_release_signing_policy_test(runner: TestRunner, powershell: str) -> str:
+    runner.run_command(
+        "release signing policy",
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "tests/release_signing_policy.ps1",
+        ],
+        cwd=REPO_ROOT,
+    )
+    return "tests/release_signing_policy.ps1"
+
+
+def run_release_identity_manager_test(runner: TestRunner, powershell: str) -> str:
+    runner.run_command(
+        "release identity manager",
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "tests/release_identity_manager.ps1",
+        ],
+        cwd=REPO_ROOT,
+    )
+    return "tests/release_identity_manager.ps1"
 
 
 def lint_xml_files() -> str:

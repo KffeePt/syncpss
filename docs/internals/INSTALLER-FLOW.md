@@ -2,7 +2,7 @@
 
 ## Windows entrypoint
 
-[main.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/installer/win/main.cpp)
+[main.cpp](../../../src/installer/win/main.cpp)
 builds `syncpss-wsl-installer.exe`.
 
 Its responsibilities are intentionally narrow:
@@ -20,7 +20,7 @@ Its responsibilities are intentionally narrow:
 
 ## Linux shell setup
 
-[installer.sh](C:/Users/santi/Documents/GitHub/syncpss/scripts/sh/installer.sh)
+[installer.sh](../../../scripts/sh/installer.sh)
 is the interactive Linux/WSL wizard.
 
 It handles:
@@ -42,13 +42,13 @@ It handles:
 
 The public bootstrap path is release-first:
 
-1. [install.sh](C:/Users/santi/Documents/GitHub/syncpss/install.sh) downloads the latest published `installer.sh`
+1. [install.sh](../../../install.sh) downloads the latest published `installer.sh`
 2. it verifies `installer.sh.sha256`
 3. it executes the verified installer locally
 
 ## Linux installer binary
 
-[main_installer.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/installer/linux/main_installer.cpp)
+[main_installer.cpp](../../../src/installer/linux/main_installer.cpp)
 builds the Linux `install` binary.
 
 It is still the final privileged step. It:
@@ -64,9 +64,9 @@ The old split between the tiny bootstrap script and the real WSL setup script wa
 
 There is now only:
 
-- [install.sh](C:/Users/santi/Documents/GitHub/syncpss/install.sh)
+- [install.sh](../../../install.sh)
   a tiny bootstrap that downloads and verifies the published `installer.sh` release asset
-- [installer.sh](C:/Users/santi/Documents/GitHub/syncpss/scripts/sh/installer.sh)
+- [installer.sh](../../../scripts/sh/installer.sh)
   the real Linux/WSL setup wizard
 - `install`
   the privileged Linux installer binary
@@ -76,11 +76,11 @@ There is now only:
 There is a matching uninstall path:
 
 - Windows helper:
-  [purge.bat](C:/Users/santi/Documents/GitHub/syncpss/scripts/purge.bat)
+  [purge.bat](../../../scripts/purge.bat)
 - PowerShell selector:
-  [purge.ps1](C:/Users/santi/Documents/GitHub/syncpss/scripts/ps1/purge.ps1)
+  [purge.ps1](../../../scripts/ps1/purge.ps1)
 - Linux/WSL uninstall script:
-  [uninstall_syncpss.sh](C:/Users/santi/Documents/GitHub/syncpss/scripts/sh/uninstall_syncpss.sh)
+  [uninstall_syncpss.sh](../../../scripts/sh/uninstall_syncpss.sh)
 
 The Windows helper copies `uninstall_syncpss.sh` into the selected WSL user's
 `~/.syncpss/helpers/` staging area and can launch it there. The Linux script then removes:

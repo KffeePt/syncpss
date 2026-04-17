@@ -17,7 +17,7 @@ The store now keeps:
 Legacy plaintext `~/.syncpss/notes.json` is migration-only input and should not be used for new notes.
 
 The TUI shells out safely to `pass` through the shared subprocess helper in
-[process.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/util/process.cpp).
+[process.cpp](../../../src/util/process.cpp).
 
 Automatic local backup directories are split by purpose:
 
@@ -39,8 +39,8 @@ The primary runtime config is:
 
 The schema is represented in:
 
-- [runtime_config.hpp](C:/Users/santi/Documents/GitHub/syncpss/src/util/runtime_config.hpp)
-- [runtime_config.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/util/runtime_config.cpp)
+- [runtime_config.hpp](../../../src/util/runtime_config.hpp)
+- [runtime_config.cpp](../../../src/util/runtime_config.cpp)
 
 It stores:
 
@@ -82,7 +82,7 @@ The older INI file is still written for compatibility:
 
 The adapter logic lives in:
 
-- [config.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/util/config.cpp)
+- [config.cpp](../../../src/util/config.cpp)
 
 `syncpss` prefers the JSON runtime config when available.
 
@@ -94,7 +94,7 @@ The git sync layer now tracks a store version and hash file:
 
 The relevant logic is in:
 
-- [git.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/git/git.cpp)
+- [git.cpp](../../../src/git/git.cpp)
 
 When local store changes are synced, the code:
 

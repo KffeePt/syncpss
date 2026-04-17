@@ -1,0 +1,20 @@
+{
+    "gpg":  {
+                "active_release_fingerprint":  "969714F4364F986A52D3D74126A7AE75C8D73311",
+                "allowed_release_fingerprints":  [
+                                                     "969714F4364F986A52D3D74126A7AE75C8D73311"
+                                                 ],
+                "verify_only_fingerprints":  [
+
+                                             ],
+                "github_account":  "KffeePt"
+            },
+    "windows_codesign":  {
+                             "phase":  "phase2",
+                             "required":  false,
+                             "allowed_thumbprints":  [
+
+                                                     ],
+                             "subject_hint":  ""
+                         }
+}

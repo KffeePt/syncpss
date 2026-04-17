@@ -8,6 +8,7 @@ param(
     [switch]$SkipBuild,
     [switch]$ForceOverwrite,
     [switch]$PassStoreOnly,
+    [switch]$SigningReadiness,
     [switch]$NonInteractive
 )
 
@@ -20,6 +21,186 @@ $MinimumReleaseVersion = "1.0.0"
 $RepoManifestPath = "manifest.xml"
 $MasterFingerprintPath = "master_fingerprint.sha256"
 $ReleaseBundlePath = "syncpss-release-binaries.zip"
+$SigningPolicyRelativePath = "config\signing_policy.json"
+$SigningFingerprintPlaceholder = "0000000000000000000000000000000000000000"
+$script:ReleaseStatusAlreadyPrinted = $false
+
+function Get-ReleaseRepoRoot {
+    if (-not [string]::IsNullOrWhiteSpace($env:SYNCPSS_RELEASE_REPO_ROOT)) {
+        return (Resolve-Path -LiteralPath $env:SYNCPSS_RELEASE_REPO_ROOT).Path
+    }
+
+    return (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+}
+
+function Get-RequiredObjectProperty {
+    param(
+        [Parameter(Mandatory = $true)][object]$Object,
+        [Parameter(Mandatory = $true)][string]$PropertyName,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $property = $Object.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) {
+        throw "$Context is missing required property '$PropertyName'."
+    }
+
+    return $property.Value
+}
+
+function ConvertTo-StringArray {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if ($null -eq $Value) {
+        return @()
+    }
+
+    if ($Value -is [string]) {
+        return @($Value)
+    }
+
+    if ($Value -is [System.Collections.IEnumerable]) {
+        return @($Value | ForEach-Object { [string]$_ })
+    }
+
+    throw "$Context must be a JSON array of strings."
+}
+
+function ConvertTo-NormalizedHexIdentifier {
+    param(
+        [AllowNull()][string]$Value,
+        [Parameter(Mandatory = $true)][int]$ExpectedLength,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $trimmed = if ($null -eq $Value) { "" } else { $Value.Trim() }
+    if ($trimmed -notmatch ("^[0-9a-fA-F]{" + $ExpectedLength + "}$")) {
+        throw "$Context must be exactly $ExpectedLength hexadecimal characters."
+    }
+
+    return $trimmed.ToUpperInvariant()
+}
+
+function ConvertTo-NormalizedHexArray {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][int]$ExpectedLength,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $normalized = @(
+        ConvertTo-StringArray -Value $Value -Context $Context |
+            ForEach-Object { ConvertTo-NormalizedHexIdentifier -Value $_ -ExpectedLength $ExpectedLength -Context $Context }
+    )
+
+    return [string[]]@($normalized | Sort-Object -Unique)
+}
+
+function Get-SigningPolicyPath {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:SYNCPSS_SIGNING_POLICY_PATH)) {
+        return (Resolve-Path -LiteralPath $env:SYNCPSS_SIGNING_POLICY_PATH).Path
+    }
+
+    return (Join-Path $RepoRoot $SigningPolicyRelativePath)
+}
+
+function Read-ReleaseSigningPolicy {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $policyPath = Get-SigningPolicyPath -RepoRoot $RepoRoot
+    if (-not (Test-Path -LiteralPath $policyPath)) {
+        throw "Signing policy file is missing at '$policyPath'."
+    }
+
+    try {
+        $policyDocument = [System.IO.File]::ReadAllText($policyPath, [System.Text.UTF8Encoding]::new($false)) | ConvertFrom-Json
+    } catch {
+        throw "Signing policy file '$policyPath' is not valid JSON."
+    }
+
+    $gpgPolicy = Get-RequiredObjectProperty -Object $policyDocument -PropertyName "gpg" -Context "Signing policy file '$policyPath'"
+    $windowsCodeSignPolicy = Get-RequiredObjectProperty -Object $policyDocument -PropertyName "windows_codesign" -Context "Signing policy file '$policyPath'"
+
+    $activeReleaseFingerprint = ConvertTo-NormalizedHexIdentifier `
+        -Value (Get-RequiredObjectProperty -Object $gpgPolicy -PropertyName "active_release_fingerprint" -Context "Signing policy gpg section") `
+        -ExpectedLength 40 `
+        -Context "Signing policy gpg.active_release_fingerprint"
+    $allowedReleaseFingerprints = [string[]]@(ConvertTo-NormalizedHexArray `
+        -Value (Get-RequiredObjectProperty -Object $gpgPolicy -PropertyName "allowed_release_fingerprints" -Context "Signing policy gpg section") `
+        -ExpectedLength 40 `
+        -Context "Signing policy gpg.allowed_release_fingerprints")
+    $verifyOnlyFingerprints = [string[]]@(ConvertTo-NormalizedHexArray `
+        -Value (Get-RequiredObjectProperty -Object $gpgPolicy -PropertyName "verify_only_fingerprints" -Context "Signing policy gpg section") `
+        -ExpectedLength 40 `
+        -Context "Signing policy gpg.verify_only_fingerprints")
+
+    if ($allowedReleaseFingerprints.Count -eq 0) {
+        throw "Signing policy gpg.allowed_release_fingerprints must list at least one release fingerprint."
+    }
+    if ($allowedReleaseFingerprints -notcontains $activeReleaseFingerprint) {
+        throw "Signing policy gpg.active_release_fingerprint must also be listed in gpg.allowed_release_fingerprints."
+    }
+    if ($verifyOnlyFingerprints -contains $activeReleaseFingerprint) {
+        throw "Signing policy gpg.verify_only_fingerprints must not contain the active release fingerprint."
+    }
+    if (@($allowedReleaseFingerprints | Where-Object { $verifyOnlyFingerprints -contains $_ }).Count -gt 0) {
+        throw "Signing policy gpg.allowed_release_fingerprints and gpg.verify_only_fingerprints must not overlap."
+    }
+
+    $githubAccount = [string](Get-RequiredObjectProperty -Object $gpgPolicy -PropertyName "github_account" -Context "Signing policy gpg section")
+    if ([string]::IsNullOrWhiteSpace($githubAccount)) {
+        throw "Signing policy gpg.github_account must not be empty."
+    }
+
+    $windowsCodeSignPhase = ([string](Get-RequiredObjectProperty -Object $windowsCodeSignPolicy -PropertyName "phase" -Context "Signing policy windows_codesign section")).Trim().ToLowerInvariant()
+    if ($windowsCodeSignPhase -notin @("phase1", "phase2")) {
+        throw "Signing policy windows_codesign.phase must be either 'phase1' or 'phase2'."
+    }
+
+    $windowsCodeSignRequired = Get-RequiredObjectProperty -Object $windowsCodeSignPolicy -PropertyName "required" -Context "Signing policy windows_codesign section"
+    if ($windowsCodeSignRequired -isnot [bool]) {
+        throw "Signing policy windows_codesign.required must be a JSON boolean."
+    }
+
+    $windowsCodeSignAllowedThumbprints = [string[]]@(ConvertTo-NormalizedHexArray `
+        -Value (Get-RequiredObjectProperty -Object $windowsCodeSignPolicy -PropertyName "allowed_thumbprints" -Context "Signing policy windows_codesign section") `
+        -ExpectedLength 40 `
+        -Context "Signing policy windows_codesign.allowed_thumbprints")
+    $windowsCodeSignSubjectHint = [string](Get-RequiredObjectProperty -Object $windowsCodeSignPolicy -PropertyName "subject_hint" -Context "Signing policy windows_codesign section")
+
+    return [pscustomobject]@{
+        Path = $policyPath
+        Gpg = [pscustomobject]@{
+            ActiveReleaseFingerprint = $activeReleaseFingerprint
+            AllowedReleaseFingerprints = $allowedReleaseFingerprints
+            VerifyOnlyFingerprints = $verifyOnlyFingerprints
+            GitHubAccount = $githubAccount.Trim()
+            ActiveReleaseFingerprintIsPlaceholder = ($activeReleaseFingerprint -eq $SigningFingerprintPlaceholder)
+        }
+        WindowsCodeSign = [pscustomobject]@{
+            Phase = $windowsCodeSignPhase
+            Required = [bool]$windowsCodeSignRequired
+            AllowedThumbprints = $windowsCodeSignAllowedThumbprints
+            SubjectHint = $windowsCodeSignSubjectHint.Trim()
+        }
+    }
+}
+
+function Format-IdentifierList {
+    param([AllowNull()][string[]]$Values)
+
+    $resolvedValues = [string[]]@($Values)
+    if ($null -eq $Values -or $resolvedValues.Count -eq 0) {
+        return "<none>"
+    }
+
+    return ($resolvedValues -join ", ")
+}
 
 function Get-ReleaseAssetRelativePaths {
     return @(
@@ -269,6 +450,10 @@ function Remove-StaleReleaseSignatureFiles {
 }
 
 function Get-GitSigningKey {
+    if (-not [string]::IsNullOrWhiteSpace($env:SYNCPSS_RELEASE_GIT_SIGNINGKEY)) {
+        return $env:SYNCPSS_RELEASE_GIT_SIGNINGKEY.Trim()
+    }
+
     $signingKey = git config --get user.signingkey
     if ($LASTEXITCODE -ne 0) {
         return ""
@@ -277,6 +462,14 @@ function Get-GitSigningKey {
 }
 
 function Get-GpgExecutablePath {
+    if (-not [string]::IsNullOrWhiteSpace($env:SYNCPSS_GPG_EXECUTABLE)) {
+        $overridePath = $env:SYNCPSS_GPG_EXECUTABLE.Trim()
+        if (-not (Test-Path -LiteralPath $overridePath)) {
+            throw "Configured GPG executable override '$overridePath' does not exist."
+        }
+        return (Resolve-Path -LiteralPath $overridePath).Path
+    }
+
     $gpg = Get-Command gpg -ErrorAction SilentlyContinue
     if ($null -ne $gpg) {
         return $gpg.Source
@@ -297,7 +490,7 @@ function Get-GpgExecutablePath {
     throw "gpg is required for signed tags and detached release signatures. Install Gpg4win on Windows and retry."
 }
 
-function Get-GpgSecretKeyFingerprint {
+function Get-GpgSecretKeyFingerprints {
     param(
         [Parameter(Mandatory = $true)][string]$GpgProgram,
         [AllowEmptyString()][string]$KeySpecifier = ""
@@ -313,6 +506,7 @@ function Get-GpgSecretKeyFingerprint {
         return ""
     }
 
+    $fingerprints = New-Object System.Collections.Generic.List[string]
     $awaitingFingerprint = $false
     foreach ($line in $secretKeyOutput) {
         $text = (($line | Out-String).Trim())
@@ -328,56 +522,235 @@ function Get-GpgSecretKeyFingerprint {
         if ($awaitingFingerprint -and $text.StartsWith("fpr:")) {
             $parts = $text.Split(':')
             if ($parts.Length -ge 10 -and -not [string]::IsNullOrWhiteSpace($parts[9])) {
-                return $parts[9].Trim()
+                $fingerprint = ConvertTo-NormalizedHexIdentifier -Value $parts[9].Trim() -ExpectedLength 40 -Context "GPG secret key fingerprint"
+                if (-not $fingerprints.Contains($fingerprint)) {
+                    [void]$fingerprints.Add($fingerprint)
+                }
+                $awaitingFingerprint = $false
             }
         }
     }
 
-    return ""
+    return [string[]]@($fingerprints.ToArray())
 }
 
-function Resolve-UsableGpgSigningKey {
-    param([Parameter(Mandatory = $true)][string]$GpgProgram)
+function Get-InstallerAuthenticodeSignatureStatus {
+    param([Parameter(Mandatory = $true)][string]$FilePath)
 
-    $configuredSigningKey = Get-GitSigningKey
-    if (-not [string]::IsNullOrWhiteSpace($configuredSigningKey)) {
-        $configuredFingerprint = Get-GpgSecretKeyFingerprint -GpgProgram $GpgProgram -KeySpecifier $configuredSigningKey
-        if (-not [string]::IsNullOrWhiteSpace($configuredFingerprint)) {
-            return [pscustomobject]@{
-                Fingerprint = $configuredFingerprint
-                Requested    = $configuredSigningKey
-                UsedFallback  = $false
-            }
-        }
-    }
-
-    $defaultFingerprint = Get-GpgSecretKeyFingerprint -GpgProgram $GpgProgram
-    if (-not [string]::IsNullOrWhiteSpace($defaultFingerprint)) {
+    if (-not [string]::IsNullOrWhiteSpace($env:SYNCPSS_TEST_AUTHENTICODE_STATUS)) {
         return [pscustomobject]@{
-            Fingerprint = $defaultFingerprint
-            Requested    = $configuredSigningKey
-            UsedFallback  = -not [string]::IsNullOrWhiteSpace($configuredSigningKey)
+            Status = $env:SYNCPSS_TEST_AUTHENTICODE_STATUS.Trim()
+            Thumbprint = if ([string]::IsNullOrWhiteSpace($env:SYNCPSS_TEST_AUTHENTICODE_THUMBPRINT)) { "" } else { ConvertTo-NormalizedHexIdentifier -Value $env:SYNCPSS_TEST_AUTHENTICODE_THUMBPRINT.Trim() -ExpectedLength 40 -Context "Test Authenticode thumbprint" }
+            Subject = if ([string]::IsNullOrWhiteSpace($env:SYNCPSS_TEST_AUTHENTICODE_SUBJECT)) { "" } else { $env:SYNCPSS_TEST_AUTHENTICODE_SUBJECT.Trim() }
         }
     }
 
-    if ([string]::IsNullOrWhiteSpace($configuredSigningKey)) {
-        throw "No usable Windows GPG secret key was found. GPG was checked at '$GpgProgram', but no secret signing key was visible. Import the secret key, not just the public certificate, and retry."
-    }
-
-    throw "No usable Windows GPG secret key was found for git user.signingkey '$configuredSigningKey'. GPG was checked at '$GpgProgram'. Import the secret key through Gpg4win and retry."
-}
-
-function Assert-GpgSigningReady {
-    $gpgProgram = Get-GpgExecutablePath
-
-    $resolvedKey = Resolve-UsableGpgSigningKey -GpgProgram $gpgProgram
-    if ($resolvedKey.UsedFallback -and -not [string]::IsNullOrWhiteSpace($resolvedKey.Requested)) {
-        Write-Host ("Configured git user.signingkey '{0}' does not have a usable secret key. Falling back to Windows GPG key {1}." -f $resolvedKey.Requested, $resolvedKey.Fingerprint) -ForegroundColor Yellow
+    $signature = Get-AuthenticodeSignature -FilePath $FilePath
+    $thumbprint = ""
+    if ($null -ne $signature.SignerCertificate -and -not [string]::IsNullOrWhiteSpace($signature.SignerCertificate.Thumbprint)) {
+        $thumbprint = ConvertTo-NormalizedHexIdentifier -Value $signature.SignerCertificate.Thumbprint -ExpectedLength 40 -Context "Windows code signing thumbprint"
     }
 
     return [pscustomobject]@{
-        GpgProgram  = $gpgProgram
-        Fingerprint = $resolvedKey.Fingerprint
+        Status = [string]$signature.Status
+        Thumbprint = $thumbprint
+        Subject = if ($null -eq $signature.SignerCertificate) { "" } else { [string]$signature.SignerCertificate.Subject }
+    }
+}
+
+function Get-WindowsCodeSigningReadiness {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][pscustomobject]$SigningPolicy
+    )
+
+    $installerPath = Join-Path $RepoRoot "bin\syncpss-wsl-installer.exe"
+    if (-not $SigningPolicy.WindowsCodeSign.Required) {
+        return [pscustomobject]@{
+            Required = $false
+            IsReady = $true
+            Message = "Windows Authenticode signing is not required by policy."
+            InstallerPath = $installerPath
+            Signature = $null
+        }
+    }
+
+    if ([string[]]@($SigningPolicy.WindowsCodeSign.AllowedThumbprints).Count -eq 0) {
+        return [pscustomobject]@{
+            Required = $true
+            IsReady = $false
+            Message = "Windows code signing is required by policy, but windows_codesign.allowed_thumbprints is empty."
+            InstallerPath = $installerPath
+            Signature = $null
+        }
+    }
+    if (-not (Test-Path -LiteralPath $installerPath)) {
+        return [pscustomobject]@{
+            Required = $true
+            IsReady = $false
+            Message = "Windows code signing is required by policy, but '$installerPath' does not exist yet."
+            InstallerPath = $installerPath
+            Signature = $null
+        }
+    }
+
+    $signature = Get-InstallerAuthenticodeSignatureStatus -FilePath $installerPath
+    if ($signature.Status -ne "Valid") {
+        return [pscustomobject]@{
+            Required = $true
+            IsReady = $false
+            Message = "Windows code signing is required by policy, but '$installerPath' is not Authenticode-signed with status Valid. Current status: $($signature.Status)."
+            InstallerPath = $installerPath
+            Signature = $signature
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($signature.Thumbprint)) {
+        return [pscustomobject]@{
+            Required = $true
+            IsReady = $false
+            Message = "Windows code signing is required by policy, but '$installerPath' did not expose a signer thumbprint."
+            InstallerPath = $installerPath
+            Signature = $signature
+        }
+    }
+    if ($SigningPolicy.WindowsCodeSign.AllowedThumbprints -notcontains $signature.Thumbprint) {
+        return [pscustomobject]@{
+            Required = $true
+            IsReady = $false
+            Message = "Windows code signing is required by policy, but '$installerPath' is signed with thumbprint '$($signature.Thumbprint)' instead of an allowed thumbprint."
+            InstallerPath = $installerPath
+            Signature = $signature
+        }
+    }
+
+    return [pscustomobject]@{
+        Required = $true
+        IsReady = $true
+        Message = "Windows Authenticode signing policy is satisfied."
+        InstallerPath = $installerPath
+        Signature = $signature
+    }
+}
+
+function Get-ReleaseSigningReadiness {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $resolvedRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+    $signingPolicy = Read-ReleaseSigningPolicy -RepoRoot $resolvedRepoRoot
+    $configuredSigningKey = Get-GitSigningKey
+    $gpgProgram = ""
+    $detectedFingerprints = @()
+    $configuredFingerprints = @()
+    $selectedFingerprint = ""
+    $status = "fail"
+    $message = ""
+
+    try {
+        $gpgProgram = Get-GpgExecutablePath
+    } catch {
+        $message = $_.Exception.Message
+        return [pscustomobject]@{
+            RepoRoot = $resolvedRepoRoot
+            SigningPolicy = $signingPolicy
+            GpgProgram = ""
+            ConfiguredSigningKey = $configuredSigningKey
+            DetectedFingerprints = @()
+            ConfiguredFingerprints = @()
+            SelectedFingerprint = ""
+            WindowsCodeSigning = Get-WindowsCodeSigningReadiness -RepoRoot $resolvedRepoRoot -SigningPolicy $signingPolicy
+            IsReady = $false
+            Status = $status
+            Message = $message
+        }
+    }
+
+    $detectedFingerprints = [string[]]@(Get-GpgSecretKeyFingerprints -GpgProgram $gpgProgram)
+
+    if ($signingPolicy.Gpg.ActiveReleaseFingerprintIsPlaceholder) {
+        $message = "Signing policy '$($signingPolicy.Path)' still uses the placeholder active release fingerprint. Replace gpg.active_release_fingerprint and gpg.allowed_release_fingerprints with the real release signing fingerprint before publishing."
+    } elseif ($detectedFingerprints.Count -eq 0) {
+        $message = "No usable Windows GPG secret key was found. GPG was checked at '$gpgProgram', but no secret signing key was visible. Import the release signing subkey, not just the public certificate, and retry."
+    } elseif (-not [string]::IsNullOrWhiteSpace($configuredSigningKey)) {
+        $configuredFingerprints = [string[]]@(Get-GpgSecretKeyFingerprints -GpgProgram $gpgProgram -KeySpecifier $configuredSigningKey)
+        if ($configuredFingerprints.Count -eq 0) {
+            $message = "git user.signingkey '$configuredSigningKey' does not resolve to a usable Windows GPG secret key in '$gpgProgram'."
+        } elseif ($configuredFingerprints -notcontains $signingPolicy.Gpg.ActiveReleaseFingerprint) {
+            $message = "git user.signingkey '$configuredSigningKey' resolves to '$((Format-IdentifierList -Values $configuredFingerprints))', but signing policy requires the active release fingerprint '$($signingPolicy.Gpg.ActiveReleaseFingerprint)'."
+        } else {
+            $selectedFingerprint = $signingPolicy.Gpg.ActiveReleaseFingerprint
+        }
+    } elseif ($detectedFingerprints -contains $signingPolicy.Gpg.ActiveReleaseFingerprint) {
+        $selectedFingerprint = $signingPolicy.Gpg.ActiveReleaseFingerprint
+    } else {
+        $message = "Active release signing fingerprint '$($signingPolicy.Gpg.ActiveReleaseFingerprint)' is not present in the Windows secret keyring. Detected secret key fingerprints: $(Format-IdentifierList -Values $detectedFingerprints)."
+    }
+
+    $windowsCodeSigning = Get-WindowsCodeSigningReadiness -RepoRoot $resolvedRepoRoot -SigningPolicy $signingPolicy
+    if ([string]::IsNullOrWhiteSpace($message) -and -not $windowsCodeSigning.IsReady) {
+        $message = $windowsCodeSigning.Message
+    }
+
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        $status = "pass"
+        $message = "Release signing readiness passed."
+    }
+
+    return [pscustomobject]@{
+        RepoRoot = $resolvedRepoRoot
+        SigningPolicy = $signingPolicy
+        GpgProgram = $gpgProgram
+        ConfiguredSigningKey = $configuredSigningKey
+        DetectedFingerprints = $detectedFingerprints
+        ConfiguredFingerprints = $configuredFingerprints
+        SelectedFingerprint = $selectedFingerprint
+        WindowsCodeSigning = $windowsCodeSigning
+        IsReady = ($status -eq "pass")
+        Status = $status
+        Message = $message
+    }
+}
+
+function Show-ReleaseSigningReadiness {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $readiness = Get-ReleaseSigningReadiness -RepoRoot $RepoRoot
+
+    Write-Host ""
+    Write-Host "syncpss signing readiness" -ForegroundColor Yellow
+    Write-Host ("Policy file:              {0}" -f $readiness.SigningPolicy.Path) -ForegroundColor Cyan
+    Write-Host ("Active release signer:    {0}" -f $readiness.SigningPolicy.Gpg.ActiveReleaseFingerprint) -ForegroundColor Cyan
+    Write-Host ("Allowed release signers:  {0}" -f (Format-IdentifierList -Values $readiness.SigningPolicy.Gpg.AllowedReleaseFingerprints)) -ForegroundColor Cyan
+    Write-Host ("Verify-only signers:      {0}" -f (Format-IdentifierList -Values $readiness.SigningPolicy.Gpg.VerifyOnlyFingerprints)) -ForegroundColor Cyan
+    Write-Host ("GitHub account:           {0}" -f $readiness.SigningPolicy.Gpg.GitHubAccount) -ForegroundColor Cyan
+    Write-Host ("Resolved gpg.exe:         {0}" -f $(if ([string]::IsNullOrWhiteSpace($readiness.GpgProgram)) { "<not found>" } else { $readiness.GpgProgram })) -ForegroundColor Cyan
+    Write-Host ("git user.signingkey:      {0}" -f $(if ([string]::IsNullOrWhiteSpace($readiness.ConfiguredSigningKey)) { "<not set>" } else { $readiness.ConfiguredSigningKey })) -ForegroundColor Cyan
+    Write-Host ("Detected secret keys:     {0}" -f (Format-IdentifierList -Values $readiness.DetectedFingerprints)) -ForegroundColor Cyan
+    Write-Host ("Windows codesign phase:   {0}" -f $readiness.SigningPolicy.WindowsCodeSign.Phase) -ForegroundColor Cyan
+    Write-Host ("Windows codesign required:{0}" -f $(if ($readiness.SigningPolicy.WindowsCodeSign.Required) { " yes" } else { " no" })) -ForegroundColor Cyan
+
+    if ($readiness.IsReady) {
+        Write-Host ("Release readiness:        PASS ({0})" -f $readiness.SelectedFingerprint) -ForegroundColor Green
+        return $readiness
+    }
+
+    Write-Host ("Release readiness:        FAIL") -ForegroundColor Red
+    Write-Host ($readiness.Message) -ForegroundColor Red
+    $script:ReleaseStatusAlreadyPrinted = $true
+    return $readiness
+}
+
+function Assert-GpgSigningReady {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $readiness = Get-ReleaseSigningReadiness -RepoRoot $RepoRoot
+    if (-not $readiness.IsReady) {
+        throw $readiness.Message
+    }
+
+    return [pscustomobject]@{
+        GpgProgram = $readiness.GpgProgram
+        Fingerprint = $readiness.SelectedFingerprint
+        SigningPolicy = $readiness.SigningPolicy
     }
 }
 
@@ -1380,6 +1753,17 @@ function Prompt-ReleaseVersionChoice {
 }
 
 function Invoke-Release {
+    $repoRoot = Get-ReleaseRepoRoot
+    Set-Location -LiteralPath $repoRoot
+
+    if ($SigningReadiness) {
+        $readiness = Show-ReleaseSigningReadiness -RepoRoot $repoRoot
+        if (-not $readiness.IsReady) {
+            throw $readiness.Message
+        }
+        return
+    }
+
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         throw "GitHub CLI (gh) is required."
     }
@@ -1387,9 +1771,6 @@ function Invoke-Release {
     if ($LASTEXITCODE -ne 0) {
         throw "GitHub CLI is not authenticated. Run 'gh auth login'."
     }
-
-    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-    Set-Location -LiteralPath $repoRoot
 
     if ($PassStoreOnly) {
         Invoke-PassStoreSync -RequestedDistro $Distro
@@ -1503,7 +1884,7 @@ function Invoke-Release {
         throw ("Missing release assets:`n" + (($missingAssets | ForEach-Object { " - $_" }) -join "`n"))
     }
 
-    $signingInfo = Assert-GpgSigningReady
+    $signingInfo = Assert-GpgSigningReady -RepoRoot $repoRoot
     Write-Host ("Using Windows GPG signing key {0}" -f $signingInfo.Fingerprint) -ForegroundColor Cyan
     Remove-StaleReleaseSignatureFiles -RepoRoot $repoRoot
     $signedAssets = Get-SignedReleaseAssetRelativePaths | ForEach-Object { Join-Path $repoRoot $_ }
@@ -1569,6 +1950,8 @@ try {
     Invoke-Release
     exit 0
 } catch {
-    Write-Host $_.Exception.Message -ForegroundColor Red
+    if (-not ($SigningReadiness -and $script:ReleaseStatusAlreadyPrinted)) {
+        Write-Host $_.Exception.Message -ForegroundColor Red
+    }
     exit 1
 }

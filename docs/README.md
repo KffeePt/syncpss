@@ -12,11 +12,11 @@ The main trust boundary is:
 
 ## Documents
 
-- [Architecture](architecture.md)
-- [Installer Flow](installer-flow.md)
-- [Installer Style And Flow](installer-style-and-flow.md)
-- [Build And Release](build-and-release.md)
-- [Runtime Config And Store](runtime-config-and-store.md)
+- [Architecture](internals/ARCHITECTURE.md)
+- [Installer Flow](internals/INSTALLER-FLOW.md)
+- [Installer Style And Flow](internals/INSTALLER-STYLE-AND-FLOW.md)
+- [Build And Release](internals/BUILD-AND-RELEASE.md)
+- [Runtime Config And Store](internals/RUNTIME-CONFIG-AND-STORE.md)
 
 ## Quick map
 

@@ -15,26 +15,26 @@ the runtime configuration.
 
 ### Main application
 
-- [src/main.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/main.cpp)
-- [src/tui/](C:/Users/santi/Documents/GitHub/syncpss/src/tui)
-- [src/store/](C:/Users/santi/Documents/GitHub/syncpss/src/store)
-- [src/git/](C:/Users/santi/Documents/GitHub/syncpss/src/git)
-- [src/ssh/](C:/Users/santi/Documents/GitHub/syncpss/src/ssh)
-- [src/crypto/](C:/Users/santi/Documents/GitHub/syncpss/src/crypto)
-- [src/util/](C:/Users/santi/Documents/GitHub/syncpss/src/util)
+- [src/main.cpp](../../../src/main.cpp)
+- [src/tui/](../../../src/tui)
+- [src/store/](../../../src/store)
+- [src/git/](../../../src/git)
+- [src/ssh/](../../../src/ssh)
+- [src/crypto/](../../../src/crypto)
+- [src/util/](../../../src/util)
 
 ### Installer components
 
 - Linux installer binary:
-  [src/installer/linux/main_installer.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/installer/linux/main_installer.cpp)
+  [src/installer/linux/main_installer.cpp](../../../src/installer/linux/main_installer.cpp)
 - Windows WSL helper:
-  [src/installer/win/main.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/installer/win/main.cpp)
+  [src/installer/win/main.cpp](../../../src/installer/win/main.cpp)
 - Linux setup wizard script:
-  [scripts/sh/installer.sh](C:/Users/santi/Documents/GitHub/syncpss/scripts/sh/installer.sh)
+  [scripts/sh/installer.sh](../../../scripts/sh/installer.sh)
 - Clipboard lease + Windows helper integration:
-  [src/util/clipboard_core.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/util/clipboard_core.cpp)
+  [src/util/clipboard_core.cpp](../../../src/util/clipboard_core.cpp)
 - Metadata ledger:
-  [src/util/entry_metadata.cpp](C:/Users/santi/Documents/GitHub/syncpss/src/util/entry_metadata.cpp)
+  [src/util/entry_metadata.cpp](../../../src/util/entry_metadata.cpp)
 
 ## Binary outputs
 

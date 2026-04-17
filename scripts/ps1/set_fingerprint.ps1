@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-SyncpssRepoRoot -RepoRoot ""
 try {
-    Show-MaintainerIdManager -RepoRoot $repoRoot
+    Show-ReleaseIdentityManager -RepoRoot $repoRoot
     exit 0
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
