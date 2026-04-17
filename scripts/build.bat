@@ -141,6 +141,11 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
 
     echo.
     echo Building Windows WSL installer...
+    if exist "%ICON_HELPER%" (
+        powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ICON_HELPER%" -RepoRoot "%REPO_ROOT%"
+        set "EXIT_CODE=!ERRORLEVEL!"
+        if not "!EXIT_CODE!"=="0" goto :fail
+    )
     windres "%WIN_INSTALLER_DIR%\installer.rc" -o "%TEMP_RES%"
     if errorlevel 1 (
         set "EXIT_CODE=!ERRORLEVEL!"
@@ -267,12 +272,6 @@ if "%BUILD_WINDOWS_INSTALLER%"=="1" (
     echo   %OUT_UNINSTALL%
     echo   %OUT_UNINSTALL_SHA%
     set "RUN_INSTALLER_PROMPT=1"
-)
-
-if exist "%ICON_HELPER%" (
-    powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%ICON_HELPER%" -RepoRoot "%REPO_ROOT%"
-    set "EXIT_CODE=!ERRORLEVEL!"
-    if not "!EXIT_CODE!"=="0" goto :fail
 )
 
 set "EXIT_CODE=0"

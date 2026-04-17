@@ -1415,7 +1415,7 @@ fi
 function Get-ReleaseCommitPrefix {
     param([Parameter(Mandatory = $true)][string]$Version)
 
-    return "[syncpss: release v${Version}: "
+    return "[syncpss: release v${Version}] "
 }
 
 function Get-ReleaseCommitSummary {
@@ -1424,6 +1424,13 @@ function Get-ReleaseCommitSummary {
     $trimmed = if ($null -eq $Message) { "" } else { $Message.Trim() }
     if ([string]::IsNullOrWhiteSpace($trimmed)) {
         return "release prep"
+    }
+
+    if ($trimmed -match '^\[syncpss: release v[^\]]+\]\s+(.+?)$') {
+        $summary = $Matches[1].Trim()
+        if (-not [string]::IsNullOrWhiteSpace($summary)) {
+            return $summary
+        }
     }
 
     if ($trimmed -match '^\[syncpss: release v[^:]+:\s*(.*?)\]$') {
@@ -1443,7 +1450,7 @@ function ConvertTo-ReleaseCommitMessage {
     )
 
     $resolvedSummary = Get-ReleaseCommitSummary -Message $Summary
-    return ((Get-ReleaseCommitPrefix -Version $Version) + $resolvedSummary + "]")
+    return ((Get-ReleaseCommitPrefix -Version $Version) + $resolvedSummary)
 }
 
 function Prompt-ReleaseCommitMessage {
@@ -1917,7 +1924,7 @@ function Commit-ReleaseMetadataIfNeeded {
         return
     }
 
-    git commit -m "[syncpss: release v${ReleaseVersion}: refresh release metadata]"
+    git commit -m (ConvertTo-ReleaseCommitMessage -Version $ReleaseVersion -Summary "refresh release metadata")
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to commit refreshed release metadata."
     }

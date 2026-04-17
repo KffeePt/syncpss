@@ -21,17 +21,17 @@ if errorlevel 1 (
     goto :fail
 )
 
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%ps1\generate_windows_icon.ps1" -RepoRoot "%REPO_ROOT%"
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%ps1\set_icon.ps1"
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" goto :fail
 
 echo.
-echo [OK] Windows icon assets refreshed successfully.
+echo [OK] Icon manager closed.
 if /I not "%NO_PAUSE%"=="1" pause
 exit /b 0
 
 :fail
 echo.
-echo [FAIL] Icon update exited with code %EXIT_CODE%.
+echo [FAIL] Icon manager exited with code %EXIT_CODE%.
 if /I not "%NO_PAUSE%"=="1" pause
 exit /b %EXIT_CODE%

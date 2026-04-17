@@ -116,6 +116,7 @@ def check_repo_structure() -> str:
         REPO_ROOT / "tests" / "release_identity_manager.ps1",
         REPO_ROOT / "tests" / "release_signing_policy.ps1",
         REPO_ROOT / "scripts" / "run_tests.bat",
+        REPO_ROOT / "scripts" / "set_icon.bat",
         REPO_ROOT / "scripts" / "sh" / "managed_paths.sh",
         REPO_ROOT / "config" / "signing_policy.json",
         REPO_ROOT / "src" / "util" / "validation.hpp",
@@ -189,9 +190,24 @@ def check_repo_structure() -> str:
         "Windows packaging must include managed_paths.sh for staged installer helpers",
     )
     ensure_text_contains(
+        REPO_ROOT / "scripts" / "build.bat",
+        "generate_windows_icon.ps1",
+        "Windows packaging must refresh icon assets before embedding the installer resources",
+    )
+    ensure_text_contains(
         REPO_ROOT / "scripts" / "ps1" / "release.ps1",
         "signing_policy.json",
         "Release flow must resolve a repo-tracked signing policy file",
+    )
+    ensure_text_contains(
+        REPO_ROOT / "scripts" / "ps1" / "set_icon.ps1",
+        "Generate the full Windows icon set from assets\\icon.svg",
+        "Icon manager must expose a TUI action for regenerating the canonical icon set",
+    )
+    ensure_text_contains(
+        REPO_ROOT / "src" / "installer" / "win" / "installer.rc",
+        "assets\\\\icon.ico",
+        "Windows installer resources must embed the canonical icon asset",
     )
     ensure_text_contains(
         REPO_ROOT / "scripts" / "ps1" / "release.ps1",
