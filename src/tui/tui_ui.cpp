@@ -6,12 +6,6 @@
 namespace syncpss::tui {
 using namespace detail;
 
-namespace {
-
-constexpr auto kClipboardLeaseDuration = std::chrono::seconds(30);
-
-}
-
 void TuiApp::initialize_curses() const {
     initscr();
     cbreak();
@@ -192,7 +186,10 @@ void TuiApp::show_clipboard_notice(const std::string& label, const syncpss::util
         apply_pair(kColorSuccess);
         mvprintw(3, 2, "%s copied to the clipboard.", label.c_str());
         clear_pair(kColorSuccess);
-        mvprintw(5, 2, "Clipboard will be cleared automatically after 30 seconds.");
+        const auto lease_minutes = static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::minutes>(kClipboardLeaseDuration).count()
+        );
+        mvprintw(5, 2, "Clipboard will clear in the background after %lld minutes.", lease_minutes);
         mvprintw(7, 2, "Returning to the menu in 3 seconds. Press any key to dismiss now.");
     };
 

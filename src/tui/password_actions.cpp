@@ -8,8 +8,6 @@ using namespace detail;
 
 namespace {
 
-constexpr auto kClipboardLeaseDuration = std::chrono::seconds(30);
-
 void render_clipboard_copy_frame(const std::string& label) {
     reset_screen_canvas();
     box(stdscr, 0, 0);
@@ -22,7 +20,7 @@ void render_clipboard_copy_frame(const std::string& label) {
     apply_pair(kColorSuccess);
     mvprintw(3, 2, "Reading and copying %s...", label.c_str());
     clear_pair(kColorSuccess);
-    mvprintw(5, 2, "Please wait. Input is paused until the clipboard copy finishes.");
+    mvprintw(5, 2, "Please wait. Input resumes once the background clipboard timer is scheduled.");
     present_screen();
 }
 

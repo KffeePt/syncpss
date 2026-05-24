@@ -40,6 +40,8 @@
 
 namespace syncpss::tui::detail {
 
+inline constexpr auto kClipboardLeaseDuration = std::chrono::minutes(130);
+
 struct ManifestEntry {
     std::string path;
     std::string description;
