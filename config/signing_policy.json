@@ -1,11 +1,11 @@
 {
     "gpg":  {
-                "active_release_fingerprint":  "969714F4364F986A52D3D74126A7AE75C8D73311",
+                "active_release_fingerprint":  "89974211D53E5FFEB3FA74745A21FD7339CC230D",
                 "allowed_release_fingerprints":  [
-                                                     "969714F4364F986A52D3D74126A7AE75C8D73311"
+                                                     "89974211D53E5FFEB3FA74745A21FD7339CC230D"
                                                  ],
                 "verify_only_fingerprints":  [
-
+                                                   "969714F4364F986A52D3D74126A7AE75C8D73311"
                                              ],
                 "github_account":  "KffeePt"
             },
