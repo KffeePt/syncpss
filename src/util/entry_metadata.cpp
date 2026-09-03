@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -285,6 +286,22 @@ void append_runtime_log(const json& payload) {
     std::filesystem::create_directories(logs_directory());
     secure_owner_only_path(logs_directory());
     const std::filesystem::path path = runtime_log_path();
+    constexpr std::uintmax_t kRuntimeLogCapBytes = 10ull * 1024ull * 1024ull; // 10 MB
+    std::error_code size_ec;
+    const std::uintmax_t size = std::filesystem::file_size(path, size_ec);
+    if (!size_ec && size > kRuntimeLogCapBytes) {
+        // Rotate: keep one prior generation so diagnostics survive, then bound
+        // retention by dropping any generation that is itself over the cap.
+        std::filesystem::path rotated = path;
+        rotated += ".old";
+        std::filesystem::remove(rotated, size_ec);
+        std::filesystem::rename(path, rotated, size_ec);
+        std::error_code rotated_size_ec;
+        const std::uintmax_t rotated_size = std::filesystem::file_size(rotated, rotated_size_ec);
+        if (!rotated_size_ec && rotated_size > kRuntimeLogCapBytes) {
+            std::filesystem::remove(rotated, size_ec);
+        }
+    }
     std::ofstream output(path, std::ios::app);
     if (!output) {
         throw std::runtime_error("Cannot write runtime log: " + path.string());

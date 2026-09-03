@@ -469,6 +469,17 @@ $command = @'
 mkdir -p "$HOME/.syncpss/logs"
 chmod 700 "$HOME/.syncpss/logs" 2>/dev/null || true
 SYNC_LOG="$HOME/.syncpss/logs/syncpss.log"
+SYNC_LOG_CAP_MB="${SYNC_LOG_CAP_MB:-25}"
+
+# Log hygiene: cap total retention (current + 1 rotated generation) and
+# truncate any single log that exceeds the cap. Keeps diagnostics without
+# letting a session recorder grow the log unbounded.
+if [ -f "$SYNC_LOG" ] && [ "$(stat -c %s "$SYNC_LOG" 2>/dev/null || echo 0)" -gt $((SYNC_LOG_CAP_MB * 1024 * 1024)) ]; then
+    mv -f "$SYNC_LOG" "$SYNC_LOG.old"
+fi
+if [ -f "$SYNC_LOG.old" ] && [ "$(stat -c %s "$SYNC_LOG.old" 2>/dev/null || echo 0)" -gt $((SYNC_LOG_CAP_MB * 1024 * 1024)) ]; then
+    rm -f "$SYNC_LOG.old"
+fi
 : >> "$SYNC_LOG"
 chmod 600 "$SYNC_LOG" 2>/dev/null || true
 export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
@@ -479,8 +490,10 @@ run_syncpss() {
     local target="$1"
     local label="$2"
 
+    # -m limits each recorded session to the cap so one hung/animated TUI
+    # session cannot balloon the log; rotation above bounds generations.
     if command -v script >/dev/null 2>&1; then
-        if script -qefac "$target" "$SYNC_LOG"; then
+        if script -qef -m "$((SYNC_LOG_CAP_MB))M" -c "$target" "$SYNC_LOG"; then
             return 0
         fi
         printf '[%s] util-linux script(1) failed while launching %s. Falling back to direct launch.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" >> "$SYNC_LOG"
