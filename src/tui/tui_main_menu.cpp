@@ -49,7 +49,7 @@ void TuiApp::show_startup_splash() {
         }
     }
 
-    const clock::time_point splash_deadline = clock::now() + std::chrono::seconds(5);
+    const clock::time_point splash_deadline = clock::now() + std::chrono::seconds(3);
     clock::time_point prompt_deadline{};
     double angle_a = 0.0;
     double angle_b = 0.0;
