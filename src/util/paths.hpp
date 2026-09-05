@@ -42,6 +42,7 @@ bool path_is_within_root(const std::filesystem::path& candidate, const std::file
 bool is_managed_user_path(const std::filesystem::path& path);
 bool is_managed_system_path(const std::filesystem::path& path);
 bool is_managed_temp_path(const std::filesystem::path& path);
+void require_owner_only_permissions(const std::filesystem::path& path);
 void require_managed_path(const std::filesystem::path& path, const std::string& action);
 void require_temporary_path(const std::filesystem::path& path, const std::string& action);
 bool is_safe_recursive_delete_target(const std::filesystem::path& path);

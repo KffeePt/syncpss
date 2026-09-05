@@ -130,7 +130,8 @@ syncpss_normalize_path() {
         fi
         realpath -m -- "${path}" 2>/dev/null && return
     fi
-    printf '%s' "${path}"
+    printf 'realpath is required for safe managed-path validation: %s\n' "${path}" >&2
+    return 1
 }
 
 syncpss_is_root_like_path() {

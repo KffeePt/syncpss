@@ -95,6 +95,8 @@ void copy_helper_to_wsl_home(const UserEntry& user, const PreparedInstallerAsset
 
     copy_text_file_with_lf(assets.helper_script, stage_dir / kHelperScript);
     stage_asset_if_present(assets.root_dir, stage_dir, kHelperScriptChecksum);
+    stage_asset_if_present(assets.root_dir, stage_dir, kHelperScriptSignature);
+    stage_asset_if_present(assets.root_dir, stage_dir, kReleaseSigningKey);
     stage_asset_if_present(assets.root_dir, stage_dir, kManagedPathsScript);
     stage_asset_if_present(assets.root_dir, stage_dir, kManagedPathsScriptChecksum);
     stage_asset_if_present(assets.root_dir, stage_dir, kMaintainerHelperScript);
@@ -116,6 +118,31 @@ void copy_helper_to_wsl_home(const UserEntry& user, const PreparedInstallerAsset
         << ": >> \"$WSL_INSTALLER_LOG\"\n"
         << "chmod 600 \"$WSL_INSTALLER_LOG\" 2>/dev/null || true\n"
         << "chmod u+x ~/.syncpss/helpers/install ~/.syncpss/helpers/installer.sh ~/.syncpss/helpers/managed_paths.sh ~/.syncpss/helpers/uninstall_syncpss.sh 2>/dev/null || true\n"
+        << (assets.install_source == InstallSource::release
+            ? "if ! command -v gpg >/dev/null 2>&1; then\n"
+              "    printf 'gpg is required to verify the signed syncpss release installer. Install gnupg in WSL and retry.\\n'\n"
+              "    exit 1\n"
+              "fi\n"
+              "verify_home=\"$(mktemp -d \"$HOME/.syncpss/helpers/release-verifier.XXXXXX\")\"\n"
+              "chmod 700 \"$verify_home\"\n"
+              "gpg --batch --no-options --no-auto-key-retrieve --homedir \"$verify_home\" --import ~/.syncpss/helpers/release-signing-key.asc >/dev/null 2>&1\n"
+              "verify_asset() {\n"
+              "    local asset=\"$1\"\n"
+              "    local status_output signer_fingerprint\n"
+              "    status_output=\"$(gpg --batch --no-options --no-auto-key-retrieve --homedir \"$verify_home\" --status-fd 1 --verify \"$asset.asc\" \"$asset\" 2>/dev/null)\"\n"
+              "    signer_fingerprint=\"$(printf '%s\\n' \"$status_output\" | awk '$1 == \"[GNUPG:]\" && $2 == \"VALIDSIG\" { print toupper($3); exit }')\"\n"
+              "    [ \"$signer_fingerprint\" = \"89974211D53E5FFEB3FA74745A21FD7339CC230D\" ]\n"
+              "}\n"
+              "cd ~/.syncpss/helpers\n"
+              "verify_asset install\n"
+              "verify_asset syncpss-linux-x86_64\n"
+              "verify_asset installer.sh\n"
+              "verify_asset managed_paths.sh\n"
+              "verify_asset manifest.xml\n"
+              "verify_asset uninstall_syncpss.sh\n"
+              "verify_asset master_fingerprint.sha256\n"
+              "rm -rf -- \"$verify_home\"\n"
+            : "")
         << "clear 2>/dev/null || true\n"
         << "printf '[%s] Starting syncpss installer window in "
         << install_source_name(assets.install_source)
@@ -144,13 +171,19 @@ void copy_helper_to_wsl_home(const UserEntry& user, const PreparedInstallerAsset
     for (const auto& asset_name : {
              kInstallBinary,
              kInstallChecksum,
+             kInstallSignature,
              kSyncpssBinary,
              kSyncpssChecksum,
+             kSyncpssSignature,
+             kManagedPathsScriptSignature,
              kManifestAsset,
              kManifestChecksum,
+             kManifestSignature,
              kMasterFingerprint,
              L"uninstall_syncpss.sh",
-             L"uninstall_syncpss.sh.sha256"
+             L"uninstall_syncpss.sh.sha256",
+             kUninstallSignature,
+             kMasterFingerprintSignature
          }) {
         stage_asset_if_present(assets.root_dir, stage_dir, asset_name);
 

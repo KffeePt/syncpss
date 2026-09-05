@@ -226,9 +226,13 @@ function Get-ReleaseAssetRelativePaths {
 function Get-SignedReleaseAssetRelativePaths {
     return @(
         "bin\syncpss-linux-x86_64",
+        "bin\install",
         "bin\syncpss-wsl-installer.exe",
         "bin\installer.sh",
         "bin\managed_paths.sh",
+        "bin\manifest.xml",
+        "bin\uninstall_syncpss.sh",
+        "bin\master_fingerprint.sha256",
         ("bin\" + $ReleaseBundlePath)
     )
 }

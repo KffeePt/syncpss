@@ -78,6 +78,7 @@ add_executable(syncpss
     src/util/config.cpp
     src/util/entry_metadata.cpp
     src/util/runtime_config.cpp
+    src/util/release_verification.cpp
     src/util/validation.cpp
 )
 
@@ -91,6 +92,7 @@ add_executable(syncpss_install
     src/util/paths.cpp
     src/util/config.cpp
     src/util/runtime_config.cpp
+    src/util/release_verification.cpp
     src/util/validation.cpp
 )
 

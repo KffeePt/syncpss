@@ -2,6 +2,7 @@
 #include "tui/detail/common.hpp"
 #include "tui/detail/release.hpp"
 #include "tui/detail/render.hpp"
+#include "util/release_verification.hpp"
 
 namespace syncpss::tui {
 using namespace detail;
@@ -100,15 +101,20 @@ void TuiApp::update_to_latest_version(bool skip_confirmation) {
         const std::filesystem::path temp_dir = syncpss::util::create_secure_temp_directory("syncpss-update");
         const std::filesystem::path helper_path = temp_dir / kInstallerAsset;
         const std::filesystem::path helper_checksum_path = temp_dir / kInstallerChecksumAsset;
+        const std::filesystem::path helper_signature_path = temp_dir / kInstallerSignatureAsset;
 
         syncpss::util::ProcessResult helper_download;
         syncpss::util::ProcessResult checksum_download;
+        syncpss::util::ProcessResult signature_download;
         if (syncpss::util::is_command_available("curl")) {
             helper_download = syncpss::util::run(
                 {"curl", "-fsSL", latest_release_asset_url(kInstallerAsset), "-o", helper_path.string()}
             );
             checksum_download = syncpss::util::run(
                 {"curl", "-fsSL", latest_release_asset_url(kInstallerChecksumAsset), "-o", helper_checksum_path.string()}
+            );
+            signature_download = syncpss::util::run(
+                {"curl", "-fsSL", latest_release_asset_url(kInstallerSignatureAsset), "-o", helper_signature_path.string()}
             );
         } else if (syncpss::util::is_command_available("gh")) {
             helper_download = syncpss::util::run(
@@ -122,6 +128,8 @@ void TuiApp::update_to_latest_version(bool skip_confirmation) {
                     kInstallerAsset,
                     "--pattern",
                     kInstallerChecksumAsset,
+                    "--pattern",
+                    kInstallerSignatureAsset,
                     "--dir",
                     temp_dir.string(),
                     "--clobber"
@@ -129,6 +137,8 @@ void TuiApp::update_to_latest_version(bool skip_confirmation) {
             );
             checksum_download.exit_code = helper_download.exit_code;
             checksum_download.stderr_output = helper_download.stderr_output;
+            signature_download.exit_code = helper_download.exit_code;
+            signature_download.stderr_output = helper_download.stderr_output;
         } else {
             throw std::runtime_error("Need curl or gh installed to download the latest updater.");
         }
@@ -139,18 +149,16 @@ void TuiApp::update_to_latest_version(bool skip_confirmation) {
         if (checksum_download.exit_code != 0) {
             throw std::runtime_error("Failed to download the installer checksum: " + checksum_download.stderr_output);
         }
+        if (signature_download.exit_code != 0) {
+            throw std::runtime_error("Failed to download the installer signature: " + signature_download.stderr_output);
+        }
 
         if (first_checksum_token(helper_checksum_path) != sha256_for_file(helper_path)) {
             throw std::runtime_error("Checksum verification failed for the downloaded installer helper.");
         }
+        syncpss::util::verify_detached_release_signature(helper_path, helper_signature_path);
 
-        std::error_code ignored;
-        std::filesystem::permissions(
-            helper_path,
-            std::filesystem::perms::owner_all,
-            std::filesystem::perm_options::replace,
-            ignored
-        );
+        syncpss::util::require_owner_only_permissions(helper_path);
 
         std::map<std::string, std::string> env = {
             {"SYNCPSS_FORCE_INSTALL", "1"},

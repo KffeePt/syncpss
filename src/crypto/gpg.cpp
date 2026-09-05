@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 
@@ -19,11 +20,26 @@ void require_ok(const syncpss::util::ProcessResult& result, const std::string& a
 }
 
 void set_owner_only_permissions(const std::filesystem::path& path) {
-    std::error_code ignored;
-    const auto perms = std::filesystem::is_directory(path)
-        ? std::filesystem::perms::owner_all
-        : (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
-    std::filesystem::permissions(path, perms, std::filesystem::perm_options::replace, ignored);
+    syncpss::util::require_owner_only_permissions(path);
+}
+
+syncpss::util::ProcessOptions gpg_options(const std::string& stdin_input = {}) {
+    const std::filesystem::path real_home = syncpss::util::get_real_home();
+    return syncpss::util::ProcessOptions{
+        std::nullopt,
+        std::map<std::string, std::string>{
+            {"HOME", real_home.string()},
+            {"GNUPGHOME", (real_home / ".gnupg").string()}
+        },
+        stdin_input
+    };
+}
+
+syncpss::util::ProcessResult run_gpg(
+    const std::vector<std::string>& argv,
+    const std::string& stdin_input = {}
+) {
+    return syncpss::util::run(argv, gpg_options(stdin_input));
 }
 
 void write_text_file(const std::filesystem::path& path, const std::string& content) {
@@ -56,14 +72,12 @@ bool GpgManager::key_exists(const std::string& key_id) const {
         return false;
     }
 
-    syncpss::util::ProcessResult result = syncpss::util::run(
-        {"gpg", "--list-secret-keys", "--with-colons", key_id}
-    );
+    syncpss::util::ProcessResult result = run_gpg({"gpg", "--list-secret-keys", "--with-colons", key_id});
     return result.exit_code == 0 && result.stdout_output.find("sec:") != std::string::npos;
 }
 
 std::vector<std::string> GpgManager::secret_key_ids() const {
-    syncpss::util::ProcessResult result = syncpss::util::run(
+    syncpss::util::ProcessResult result = run_gpg(
         {"gpg", "--list-secret-keys", "--keyid-format", "LONG", "--with-colons"}
     );
     if (result.exit_code != 0) {
@@ -93,7 +107,7 @@ std::vector<std::string> GpgManager::secret_key_ids() const {
 }
 
 void GpgManager::generate_key_interactive() const {
-    const int exit_code = syncpss::util::run_passthrough({"gpg", "--full-generate-key"});
+    const int exit_code = syncpss::util::run_passthrough({"gpg", "--full-generate-key"}, gpg_options());
     if (exit_code != 0) {
         throw std::runtime_error("gpg --full-generate-key failed");
     }
@@ -107,15 +121,15 @@ void GpgManager::export_to_directory(const std::filesystem::path& destination) c
     std::filesystem::create_directories(destination);
     set_owner_only_permissions(destination);
 
-    const syncpss::util::ProcessResult pubkeys = syncpss::util::run({"gpg", "--armor", "--export"});
+    const syncpss::util::ProcessResult pubkeys = run_gpg({"gpg", "--armor", "--export"});
     require_ok(pubkeys, "gpg --export");
     write_text_file(destination / "pubkeys.asc", pubkeys.stdout_output);
 
-    const syncpss::util::ProcessResult seckeys = syncpss::util::run({"gpg", "--armor", "--export-secret-keys"});
+    const syncpss::util::ProcessResult seckeys = run_gpg({"gpg", "--armor", "--export-secret-keys"});
     require_ok(seckeys, "gpg --export-secret-keys");
     write_text_file(destination / "seckeys.asc", seckeys.stdout_output);
 
-    const syncpss::util::ProcessResult ownertrust = syncpss::util::run({"gpg", "--export-ownertrust"});
+    const syncpss::util::ProcessResult ownertrust = run_gpg({"gpg", "--export-ownertrust"});
     require_ok(ownertrust, "gpg --export-ownertrust");
     write_text_file(destination / "ownertrust.txt", ownertrust.stdout_output);
 
@@ -141,34 +155,34 @@ void GpgManager::merge_from_directory(const std::filesystem::path& source) const
 
     const std::filesystem::path pubkeys = source / "pubkeys.asc";
     if (std::filesystem::exists(pubkeys)) {
-        require_ok(syncpss::util::run({"gpg", "--import", pubkeys.string()}), "gpg --import pubkeys");
+        require_ok(run_gpg({"gpg", "--import", pubkeys.string()}), "gpg --import pubkeys");
     }
 
     const std::filesystem::path seckeys = source / "seckeys.asc";
     if (std::filesystem::exists(seckeys)) {
-        require_ok(syncpss::util::run({"gpg", "--import", seckeys.string()}), "gpg --import secret keys");
+        require_ok(run_gpg({"gpg", "--import", seckeys.string()}), "gpg --import secret keys");
     }
 
     const std::filesystem::path ownertrust = source / "ownertrust.txt";
     if (std::filesystem::exists(ownertrust)) {
-        const syncpss::util::ProcessResult result = syncpss::util::run(
+        const syncpss::util::ProcessResult result = run_gpg(
             {"gpg", "--import-ownertrust"},
-            syncpss::util::ProcessOptions{std::nullopt, std::nullopt, [&ownertrust]() {
+            [&ownertrust]() {
                 std::ifstream input(ownertrust, std::ios::binary);
                 if (!input) {
                     throw std::runtime_error("Cannot read ownertrust file: " + ownertrust.string());
                 }
                 return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-            }()}
+            }()
         );
         require_ok(result, "gpg --import-ownertrust");
     }
 
-    require_ok(syncpss::util::run({"gpg", "--check-trustdb"}), "gpg --check-trustdb");
+    require_ok(run_gpg({"gpg", "--check-trustdb"}), "gpg --check-trustdb");
 }
 
 void GpgManager::export_public_key_to_file(const std::string& key_id, const std::filesystem::path& destination) const {
-    const syncpss::util::ProcessResult result = syncpss::util::run({"gpg", "--armor", "--export", key_id});
+    const syncpss::util::ProcessResult result = run_gpg({"gpg", "--armor", "--export", key_id});
     require_ok(result, "gpg --export public key");
     write_text_file(destination, result.stdout_output);
 }

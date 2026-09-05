@@ -68,19 +68,10 @@ void tighten_gnupg_permissions(const std::filesystem::path& gnupg_dir) {
         }
     }
 
-    std::error_code ignored;
-    std::filesystem::permissions(
-        gnupg_dir,
-        std::filesystem::perms::owner_all,
-        std::filesystem::perm_options::replace,
-        ignored
-    );
+    syncpss::util::require_owner_only_permissions(gnupg_dir);
 
     for (const auto& entry : std::filesystem::recursive_directory_iterator(gnupg_dir)) {
-        const auto perms = entry.is_directory()
-            ? std::filesystem::perms::owner_all
-            : (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
-        std::filesystem::permissions(entry.path(), perms, std::filesystem::perm_options::replace, ignored);
+        syncpss::util::require_owner_only_permissions(entry.path());
     }
 }
 

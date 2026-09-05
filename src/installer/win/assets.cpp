@@ -291,8 +291,25 @@ std::filesystem::path download_release_asset(const std::wstring& asset_name) {
 std::filesystem::path download_helper_script() {
     const std::filesystem::path script_path = download_release_asset(kHelperScript);
     const std::filesystem::path checksum_path = download_release_asset(kHelperScriptChecksum);
+    (void)download_release_asset(kHelperScriptSignature);
     verify_release_asset_checksum(script_path, checksum_path);
     return script_path;
+}
+
+void prepare_release_signature(const wchar_t* signature_name) {
+    (void)download_release_asset(signature_name);
+}
+
+void write_release_signing_key(const std::filesystem::path& destination) {
+    std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("Failed to stage the release verification key");
+    }
+    output.write(kReleaseSigningPublicKey, static_cast<std::streamsize>(std::char_traits<char>::length(kReleaseSigningPublicKey)));
+    output.flush();
+    if (!output.good()) {
+        throw std::runtime_error("Failed to flush the release verification key");
+    }
 }
 
 std::string install_source_name(const InstallSource install_source) {
@@ -335,12 +352,19 @@ PreparedInstallerAssets prepare_installer_assets(const InstallSource install_sou
 
     const std::filesystem::path root_dir = process_temp_dir();
     const std::filesystem::path helper_script = download_helper_script();
+    write_release_signing_key(root_dir / kReleaseSigningKey);
     try_prepare_release_support_asset(kManagedPathsScript, kManagedPathsScriptChecksum);
+    prepare_release_signature(kManagedPathsScriptSignature);
     try_prepare_release_support_asset(kInstallBinary, kInstallChecksum);
+    prepare_release_signature(kInstallSignature);
     try_prepare_release_support_asset(kSyncpssBinary, kSyncpssChecksum);
+    prepare_release_signature(kSyncpssSignature);
     try_prepare_release_support_asset(kManifestAsset, kManifestChecksum);
+    prepare_release_signature(kManifestSignature);
     try_prepare_release_support_asset(L"uninstall_syncpss.sh", L"uninstall_syncpss.sh.sha256");
+    prepare_release_signature(kUninstallSignature);
     try_prepare_release_support_asset(kMasterFingerprint, nullptr);
+    prepare_release_signature(kMasterFingerprintSignature);
     copy_optional_text_asset(exe_dir() / kMaintainerHelperScript, root_dir / kMaintainerHelperScript);
     assets.root_dir = root_dir;
     assets.helper_script = helper_script;

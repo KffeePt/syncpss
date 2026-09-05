@@ -41,7 +41,7 @@ initialize_uninstall_log() {
     log_dir="$(dirname "${UNINSTALL_LOG_FILE}")"
     mkdir -p "${log_dir}" 2>/dev/null || true
     : >> "${UNINSTALL_LOG_FILE}" 2>/dev/null || true
-    chmod 600 "${UNINSTALL_LOG_FILE}" 2>/dev/null || true
+    chmod 600 "${UNINSTALL_LOG_FILE}"
 
     if [ "${SYNCPSS_UNINSTALL_LOG_REDIRECTED:-0}" != "1" ] && command -v tee >/dev/null 2>&1; then
         export SYNCPSS_UNINSTALL_LOG_REDIRECTED=1

@@ -62,6 +62,21 @@ REAL_GROUP="$(id -gn "${REAL_USER}" 2>/dev/null || id -gn)"
 MAX_STORE_BACKUPS=10
 MAX_GNUPG_BACKUPS=20
 VERACRYPT_TIMEOUT_SECONDS="${SYNCPSS_VERACRYPT_TIMEOUT_SECONDS:-20}"
+RELEASE_SIGNING_FINGERPRINT="89974211D53E5FFEB3FA74745A21FD7339CC230D"
+RELEASE_SIGNING_PUBLIC_KEY='-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEadnR5xYJKwYBBAHaRw8BAQdAfrq0eZ24KOJBnNvpiq1BCUdSFXAtB/54chwY
+C4/bsvS0tvZmZlZSBQb3QgTWFpboi1BBMWCgBdFiEEiZdCEdU+X/6z+nR0WiH9
+cznMIw0FAmnZ0ecbFIAAAAAABAAObWFudTIsMi41KzEuMTIsMiwxAhsDBQkFpFS5
+BQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEFoh/XM5zCMNm6YBAOKgk1Gn
+2bT5xNUMuAUGBV8ONiVA2kmgw4X9VClCOS63APwMG683OkVeO1kJkfF1C20Bi1mm
+mjCQ1NMe5AmmjpoTBbg4BGnZ0ecSCisGAQQBl1UBBQEBB0B670QnggtMmfwAy+Le
+i6JP8nQtfFg0QSlsUKxOBoEIQwMBCAeImgQYFgoAQhYhBImXQhHVPl/+s/p0dFoh
+/XM5zCMNBQJp2dHnGxSAAAAAAAQADm1hbnUyLDIuNSsxLjEyLDIsMQIbDAUJBaRU
+uQAKCRBaIf1zOcwjDbKZAP9vDYVWR9l99fSOGb/akwRqQ4meYawl4dtQRYxkbKco
+CQD/TC0/8yGytWiFv6PmMfj58vS0RYjhrHCpq/GNpXhv2AM=
+=VhQF
+-----END PGP PUBLIC KEY BLOCK-----'
 VERACRYPT_LAST_FAILURE_REASON=""
 ANSI_ENABLED=0
 MOTION_ENABLED=0
@@ -127,11 +142,11 @@ installer_log_timestamp() {
 
 initialize_installer_logs() {
     mkdir -p "${LOGS_DIR}"
-    chmod 700 "${LOGS_DIR}" 2>/dev/null || true
+    chmod 700 "${LOGS_DIR}"
     : >> "${INSTALLER_LOG_FILE}"
     : >> "${SYNCPSS_LOG_FILE}"
     : >> "${WSL_INSTALLER_LOG_FILE}"
-    chmod 600 "${INSTALLER_LOG_FILE}" "${SYNCPSS_LOG_FILE}" "${WSL_INSTALLER_LOG_FILE}" 2>/dev/null || true
+    chmod 600 "${INSTALLER_LOG_FILE}" "${SYNCPSS_LOG_FILE}" "${WSL_INSTALLER_LOG_FILE}"
     INSTALLER_LOG_READY=1
 }
 
@@ -2697,7 +2712,7 @@ generate_syncpss_gpg_key() {
     fi
 
     mkdir -p "${HOME}/.gnupg"
-    chmod 700 "${HOME}/.gnupg" 2>/dev/null || true
+    chmod 700 "${HOME}/.gnupg"
     if [ ! -f "${HOME}/.gnupg/gpg.conf" ] || ! grep -Eq '^[[:space:]]*cert-digest-algo[[:space:]]+SHA256([[:space:]]|$)' "${HOME}/.gnupg/gpg.conf"; then
         {
             printf '\n'
@@ -2705,7 +2720,7 @@ generate_syncpss_gpg_key() {
             printf 'personal-digest-preferences SHA256\n'
             printf 'cert-digest-algo SHA256\n'
         } >> "${HOME}/.gnupg/gpg.conf"
-        chmod 600 "${HOME}/.gnupg/gpg.conf" 2>/dev/null || true
+        chmod 600 "${HOME}/.gnupg/gpg.conf"
     fi
 
     log "No reusable GPG key was found. Generating a new RSA 4096-bit signing/encryption key for syncpss..."
@@ -3096,7 +3111,7 @@ run_uninstall_from_installer() {
     local uninstall_script="${SCRIPT_DIR}/uninstall_syncpss.sh"
     [ -f "${uninstall_script}" ] || fail "Uninstall helper was not found at ${uninstall_script}"
 
-    chmod u+x "${uninstall_script}" 2>/dev/null || true
+    chmod u+x "${uninstall_script}"
     log
     log "Launching uninstall helper..."
     bash "${uninstall_script}"
@@ -3389,7 +3404,7 @@ package_local_gnupg_keys_to_remote() {
     write_keys_container_manifest "${mount_point}"
     dismount_veracrypt_mount "${mount_point}" || fail "Failed to dismount the new VeraCrypt keys container"
     cp -f "${staging_volume}" "${remote_keys}"
-    chmod 600 "${remote_keys}" 2>/dev/null || true
+    chmod 600 "${remote_keys}"
     STORE_REMOTE_KEYS_PRESENT=1
 
     rm -rf "${mount_point}" "${staging_volume}"
@@ -3504,10 +3519,11 @@ fix_gnupg_permissions() {
     local gnupg_dir="${HOME}/.gnupg"
     [ -d "${gnupg_dir}" ] || return 0
     sudo_run chown -R "${REAL_USER}:${REAL_GROUP}" "${gnupg_dir}" 2>/dev/null || \
-        sudo_run chown -R "${REAL_USER}" "${gnupg_dir}" 2>/dev/null || true
-    chmod 700 "${gnupg_dir}" || true
-    find "${gnupg_dir}" -type d -exec chmod 700 {} \; 2>/dev/null || true
-    find "${gnupg_dir}" -type f -exec chmod 600 {} \; 2>/dev/null || true
+        sudo_run chown -R "${REAL_USER}" "${gnupg_dir}" 2>/dev/null || \
+        fail "Could not set ownership on ${gnupg_dir}."
+    chmod 700 "${gnupg_dir}"
+    find "${gnupg_dir}" -type d -exec chmod 700 {} \;
+    find "${gnupg_dir}" -type f -exec chmod 600 {} \;
 }
 
 should_skip_live_gnupg_entry() {
@@ -3827,7 +3843,7 @@ restore_gpg_from_remote_keys() {
         raw_dir="$(find_gnupg_source_dir "${mount_point}" || true)"
         show_merge_preview "${mount_point}"
         mkdir -p "${HOME}/.gnupg"
-        chmod 700 "${HOME}/.gnupg" || true
+    chmod 700 "${HOME}/.gnupg"
         if [ -f "${mount_point}/pubkeys.asc" ]; then
             gpg --import "${mount_point}/pubkeys.asc"
         fi
@@ -3934,6 +3950,38 @@ sha_check() {
     fi
 
     fail "No SHA-256 checker found."
+}
+
+verify_release_signature() {
+    local asset_path="$1"
+    local signature_path="$2"
+    local verifier_home="${TMP_DIR}/release-verifier"
+    local key_path="${verifier_home}/release-signing-key.asc"
+    local status_output signer_fingerprint observed_fingerprint
+
+    command_exists gpg || fail "gpg is required to verify signed release assets"
+    mkdir -p "${verifier_home}"
+    chmod 700 "${verifier_home}"
+    if [ ! -f "${key_path}" ]; then
+        printf '%s\n' "${RELEASE_SIGNING_PUBLIC_KEY}" > "${key_path}"
+        chmod 600 "${key_path}"
+        gpg --batch --no-options --no-auto-key-retrieve --homedir "${verifier_home}" \
+            --import "${key_path}" >/dev/null 2>&1 || fail "Could not load the trusted syncpss release key"
+    fi
+
+    observed_fingerprint="$(gpg --batch --no-options --no-auto-key-retrieve --homedir "${verifier_home}" \
+        --with-colons --list-keys "${RELEASE_SIGNING_FINGERPRINT}" 2>/dev/null | \
+        awk -F: '$1 == "fpr" { print toupper($10); exit }')"
+    [ "${observed_fingerprint}" = "${RELEASE_SIGNING_FINGERPRINT}" ] || \
+        fail "The trusted syncpss release key fingerprint did not match policy"
+
+    status_output="$(gpg --batch --no-options --no-auto-key-retrieve --homedir "${verifier_home}" \
+        --status-fd 1 --verify "${signature_path}" "${asset_path}" 2>/dev/null)" || \
+        fail "Release signature verification failed for ${asset_path}"
+    signer_fingerprint="$(printf '%s\n' "${status_output}" | \
+        awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($3); exit }')"
+    [ "${signer_fingerprint}" = "${RELEASE_SIGNING_FINGERPRINT}" ] || \
+        fail "Release asset was not signed by the trusted syncpss release key"
 }
 
 json_parser_command() {
@@ -4171,7 +4219,13 @@ download_release_assets_from_github() {
             "${TMP_DIR}/${MANAGED_PATHS_SHA_ASSET}" \
             "${TMP_DIR}/${UNINSTALL_ASSET}" \
             "${TMP_DIR}/${UNINSTALL_SHA_ASSET}" \
-            "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}"
+            "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}" \
+            "${TMP_DIR}/${INSTALL_ASSET}.asc" \
+            "${TMP_DIR}/${SYNCPS_ASSET}.asc" \
+            "${TMP_DIR}/${MANAGED_PATHS_ASSET}.asc" \
+            "${TMP_DIR}/${MANIFEST_ASSET}.asc" \
+            "${TMP_DIR}/${UNINSTALL_ASSET}.asc" \
+            "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}.asc"
 
         if \
             download_release_asset "${release_tag}" "${INSTALL_ASSET}" "${TMP_DIR}/${INSTALL_ASSET}" && \
@@ -4184,7 +4238,26 @@ download_release_assets_from_github() {
             download_or_copy_support_asset "${release_tag}" "${MANAGED_PATHS_SHA_ASSET}" "${TMP_DIR}/${MANAGED_PATHS_SHA_ASSET}" && \
             download_release_asset "${release_tag}" "${UNINSTALL_ASSET}" "${TMP_DIR}/${UNINSTALL_ASSET}" && \
             download_release_asset "${release_tag}" "${UNINSTALL_SHA_ASSET}" "${TMP_DIR}/${UNINSTALL_SHA_ASSET}" && \
-            download_release_asset "${release_tag}" "${MASTER_FINGERPRINT_ASSET}" "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}"; then
+            download_release_asset "${release_tag}" "${MASTER_FINGERPRINT_ASSET}" "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}" && \
+            download_release_asset "${release_tag}" "${INSTALL_ASSET}.asc" "${TMP_DIR}/${INSTALL_ASSET}.asc" && \
+            download_release_asset "${release_tag}" "${SYNCPS_ASSET}.asc" "${TMP_DIR}/${SYNCPS_ASSET}.asc" && \
+            download_release_asset "${release_tag}" "${MANAGED_PATHS_ASSET}.asc" "${TMP_DIR}/${MANAGED_PATHS_ASSET}.asc" && \
+            download_release_asset "${release_tag}" "${MANIFEST_ASSET}.asc" "${TMP_DIR}/${MANIFEST_ASSET}.asc" && \
+            download_release_asset "${release_tag}" "${UNINSTALL_ASSET}.asc" "${TMP_DIR}/${UNINSTALL_ASSET}.asc" && \
+            download_release_asset "${release_tag}" "${MASTER_FINGERPRINT_ASSET}.asc" "${TMP_DIR}/${MASTER_FINGERPRINT_ASSET}.asc" && \
+            (
+                cd "${TMP_DIR}" && \
+                sha_check "${INSTALL_ASSET}" "${INSTALL_SHA_ASSET}" && \
+                sha_check "${SYNCPS_ASSET}" "${SYNCPS_SHA_ASSET}" && \
+                sha_check "${MANAGED_PATHS_ASSET}" "${MANAGED_PATHS_SHA_ASSET}" && \
+                sha_check "${UNINSTALL_ASSET}" "${UNINSTALL_SHA_ASSET}" && \
+                verify_release_signature "${MANIFEST_ASSET}" "${MANIFEST_ASSET}.asc" && \
+                verify_release_signature "${INSTALL_ASSET}" "${INSTALL_ASSET}.asc" && \
+                verify_release_signature "${SYNCPS_ASSET}" "${SYNCPS_ASSET}.asc" && \
+                verify_release_signature "${MANAGED_PATHS_ASSET}" "${MANAGED_PATHS_ASSET}.asc" && \
+                verify_release_signature "${UNINSTALL_ASSET}" "${UNINSTALL_ASSET}.asc" && \
+                verify_release_signature "${MASTER_FINGERPRINT_ASSET}" "${MASTER_FINGERPRINT_ASSET}.asc"
+            ); then
             return 0
         fi
 
@@ -4395,6 +4468,8 @@ download_install_binary() {
             fail "Failed to download installer.sh from the selected GitHub release."
         download_release_asset "${latest_tag}" "installer.sh.sha256" "${TMP_DIR}/installer.sh.sha256" || \
             fail "Failed to download installer.sh.sha256 from the selected GitHub release."
+        download_release_asset "${latest_tag}" "installer.sh.asc" "${TMP_DIR}/installer.sh.asc" || \
+            fail "Failed to download the installer signature from the selected GitHub release."
 
         (
             cd "${TMP_DIR}"
@@ -4404,6 +4479,7 @@ download_install_binary() {
             sha_check "${MANIFEST_ASSET}" "${MANIFEST_SHA_ASSET}"
             sha_check "${MANAGED_PATHS_ASSET}" "${MANAGED_PATHS_SHA_ASSET}"
             sha_check "${UNINSTALL_ASSET}" "${UNINSTALL_SHA_ASSET}"
+            verify_release_signature "installer.sh" "installer.sh.asc"
         ) || fail "Checksum verification failed for downloaded install assets"
         manifest_xml="$(cat "${TMP_DIR}/${MANIFEST_ASSET}")"
         if ! release_manifest_matches_tag "${latest_tag}" "${manifest_xml}"; then
@@ -4434,7 +4510,8 @@ persist_local_install_verification_assets() {
     install -m 600 "${TMP_DIR}/${MANIFEST_SHA_ASSET}" "${INSTALL_ASSETS_DIR}/${MANIFEST_SHA_ASSET}"
     install -m 700 "${TMP_DIR}/${MANAGED_PATHS_ASSET}" "${INSTALL_ASSETS_DIR}/${MANAGED_PATHS_ASSET}"
     install -m 700 "${TMP_DIR}/${UNINSTALL_ASSET}" "${INSTALL_ASSETS_DIR}/${UNINSTALL_ASSET}"
-    chown -R "${REAL_USER}:${REAL_GROUP}" "${INSTALL_ASSETS_DIR}" "${RUNTIME_CONFIG_DIR}" 2>/dev/null || true
+    chown -R "${REAL_USER}:${REAL_GROUP}" "${INSTALL_ASSETS_DIR}" "${RUNTIME_CONFIG_DIR}" 2>/dev/null || \
+        fail "Could not set ownership on staged runtime assets."
 }
 
 ensure_installation_health() {

@@ -16,6 +16,54 @@ fail() {
     exit 1
 }
 
+RELEASE_SIGNING_FINGERPRINT="89974211D53E5FFEB3FA74745A21FD7339CC230D"
+RELEASE_SIGNING_PUBLIC_KEY='-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEadnR5xYJKwYBBAHaRw8BAQdAfrq0eZ24KOJBnNvpiq1BCUdSFXAtB/54chwY
+C4/bsvS0tvZmZlZSBQb3QgTWFpboi1BBMWCgBdFiEEiZdCEdU+X/6z+nR0WiH9
+cznMIw0FAmnZ0ecbFIAAAAAABAAObWFudTIsMi41KzEuMTIsMiwxAhsDBQkFpFS5
+BQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEFoh/XM5zCMNm6YBAOKgk1Gn
+2bT5xNUMuAUGBV8ONiVA2kmgw4X9VClCOS63APwMG683OkVeO1kJkfF1C20Bi1mm
+mjCQ1NMe5AmmjpoTBbg4BGnZ0ecSCisGAQQBl1UBBQEBB0B670QnggtMmfwAy+Le
+i6JP8nQtfFg0QSlsUKxOBoEIQwMBCAeImgQYFgoAQhYhBImXQhHVPl/+s/p0dFoh
+/XM5zCMNBQJp2dHnGxSAAAAAAAQADm1hbnUyLDIuNSsxLjEyLDIsMQIbDAUJBaRU
+uQAKCRBaIf1zOcwjDbKZAP9vDYVWR9l99fSOGb/akwRqQ4meYawl4dtQRYxkbKco
+CQD/TC0/8yGytWiFv6PmMfj58vS0RYjhrHCpq/GNpXhv2AM=
+=VhQF
+-----END PGP PUBLIC KEY BLOCK-----'
+
+verify_release_signature() {
+    local asset_path="$1"
+    local signature_path="$2"
+    local verifier_home="${TMP_DIR}/release-verifier"
+    local key_path="${verifier_home}/release-signing-key.asc"
+    local status_output signer_fingerprint observed_fingerprint
+
+    command -v gpg >/dev/null 2>&1 || fail "gpg is required to verify the signed syncpss installer"
+    mkdir -p "${verifier_home}"
+    chmod 700 "${verifier_home}"
+    if [ ! -f "${key_path}" ]; then
+        printf '%s\n' "${RELEASE_SIGNING_PUBLIC_KEY}" > "${key_path}"
+        chmod 600 "${key_path}"
+        gpg --batch --no-options --no-auto-key-retrieve --homedir "${verifier_home}" \
+            --import "${key_path}" >/dev/null 2>&1 || fail "Could not load the trusted syncpss release key"
+    fi
+
+    observed_fingerprint="$(gpg --batch --no-options --no-auto-key-retrieve --homedir "${verifier_home}" \
+        --with-colons --list-keys "${RELEASE_SIGNING_FINGERPRINT}" 2>/dev/null | \
+        awk -F: '$1 == "fpr" { print toupper($10); exit }')"
+    [ "${observed_fingerprint}" = "${RELEASE_SIGNING_FINGERPRINT}" ] || \
+        fail "The trusted syncpss release key fingerprint did not match policy"
+
+    status_output="$(gpg --batch --no-options --no-auto-key-retrieve --homedir "${verifier_home}" \
+        --status-fd 1 --verify "${signature_path}" "${asset_path}" 2>/dev/null)" || \
+        fail "Release signature verification failed for ${asset_path}"
+    signer_fingerprint="$(printf '%s\n' "${status_output}" | \
+        awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($3); exit }')"
+    [ "${signer_fingerprint}" = "${RELEASE_SIGNING_FINGERPRINT}" ] || \
+        fail "Release asset was not signed by the trusted syncpss release key"
+}
+
 download() {
     local asset_name="$1"
     local destination="$2"
@@ -69,12 +117,14 @@ RELEASE_TAG="$(resolve_release_tag)"
 printf 'Downloading syncpss installer release %s...\n' "${RELEASE_TAG}"
 download "installer.sh" "${TMP_DIR}/installer.sh" "${RELEASE_TAG}"
 download "installer.sh.sha256" "${TMP_DIR}/installer.sh.sha256" "${RELEASE_TAG}"
+download "installer.sh.asc" "${TMP_DIR}/installer.sh.asc" "${RELEASE_TAG}"
 
 expected_checksum="$(read_checksum "${TMP_DIR}/installer.sh.sha256")"
 actual_checksum="$(sha256_for_file "${TMP_DIR}/installer.sh")"
 [ -n "${expected_checksum}" ] || fail "installer.sh.sha256 did not contain a checksum"
 [ "${expected_checksum}" = "${actual_checksum}" ] || \
     fail "installer.sh checksum mismatch. Expected ${expected_checksum}, got ${actual_checksum}"
+verify_release_signature "${TMP_DIR}/installer.sh" "${TMP_DIR}/installer.sh.asc"
 
 install -m 700 "${TMP_DIR}/installer.sh" "${TARGET}"
 printf 'Verified and staged installer to %s\n' "${TARGET}"
