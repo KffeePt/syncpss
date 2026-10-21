@@ -49,7 +49,7 @@ void TuiApp::show_startup_splash() {
         }
     }
 
-    const clock::time_point splash_deadline = clock::now() + std::chrono::seconds(5);
+    const clock::time_point splash_deadline = clock::now() + std::chrono::seconds(3);
     clock::time_point prompt_deadline{};
     double angle_a = 0.0;
     double angle_b = 0.0;
@@ -83,7 +83,7 @@ void TuiApp::show_startup_splash() {
             release_result_consumed = true;
             if (can_offer_update && latest_release_update_available) {
                 prompt_active = true;
-                prompt_deadline = clock::now() + std::chrono::seconds(30);
+                prompt_deadline = splash_deadline;
             }
         }
 
@@ -116,7 +116,7 @@ void TuiApp::show_startup_splash() {
                 loading_phase,
                 "Loading updater",
                 detail,
-                seconds_remaining / 30.0,
+                seconds_remaining / 3.0,
                 prompt
             );
             present_screen();

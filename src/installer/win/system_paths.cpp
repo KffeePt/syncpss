@@ -1,9 +1,72 @@
 #include "common.hpp"
 
+std::wstring resolve_host_command_path(const std::wstring& command) {
+    if (command.empty()) {
+        throw std::runtime_error("Host command name is empty");
+    }
+
+    const std::filesystem::path requested(command);
+    if (requested.has_root_name() || requested.has_root_directory()) {
+        if (!std::filesystem::is_regular_file(requested)) {
+            throw std::runtime_error("Host command was not found: " + to_utf8(command));
+        }
+        return requested.lexically_normal().wstring();
+    }
+
+    wchar_t system_directory_buffer[MAX_PATH]{};
+    const UINT system_directory_length = GetSystemDirectoryW(
+        system_directory_buffer,
+        static_cast<UINT>(std::size(system_directory_buffer))
+    );
+    if (system_directory_length == 0 || system_directory_length >= std::size(system_directory_buffer)) {
+        throw std::runtime_error("Could not resolve the Windows system directory");
+    }
+    const std::filesystem::path system_directory(
+        std::wstring(system_directory_buffer, system_directory_length)
+    );
+
+    std::wstring normalized = command;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    std::filesystem::path candidate;
+    if (normalized == L"powershell.exe") {
+        candidate = system_directory / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
+    } else if (normalized == L"wsl.exe" || normalized == L"cmd.exe") {
+        candidate = system_directory / command;
+    } else {
+        wchar_t buffer[32768]{};
+        const DWORD found = SearchPathW(
+            nullptr,
+            command.c_str(),
+            nullptr,
+            static_cast<DWORD>(std::size(buffer)),
+            buffer,
+            nullptr
+        );
+        if (found == 0 || found >= std::size(buffer)) {
+            throw std::runtime_error("Host command was not found: " + to_utf8(command));
+        }
+        candidate = std::filesystem::path(std::wstring(buffer, found));
+        const std::filesystem::path current_directory = std::filesystem::current_path();
+        if (candidate.parent_path() == current_directory) {
+            throw std::runtime_error("Refusing to execute a host command from the current directory: " + to_utf8(command));
+        }
+    }
+
+    if (!std::filesystem::is_regular_file(candidate)) {
+        throw std::runtime_error("Host command was not found: " + to_utf8(command));
+    }
+    return candidate.lexically_normal().wstring();
+}
+
 bool host_command_available(const std::wstring& command) {
-    wchar_t buffer[MAX_PATH];
-    const DWORD found = SearchPathW(nullptr, command.c_str(), nullptr, MAX_PATH, buffer, nullptr);
-    return found > 0 && found < MAX_PATH;
+    try {
+        (void)resolve_host_command_path(command);
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 namespace {
@@ -51,11 +114,12 @@ void require_within_profile(const std::filesystem::path& candidate, const std::w
 }
 
 int run_elevated_process_and_wait(const std::wstring& file, const std::wstring& parameters) {
+    const std::wstring resolved_file = resolve_host_command_path(file);
     SHELLEXECUTEINFOW exec_info{};
     exec_info.cbSize = sizeof(exec_info);
     exec_info.fMask = SEE_MASK_NOCLOSEPROCESS;
     exec_info.lpVerb = L"runas";
-    exec_info.lpFile = file.c_str();
+    exec_info.lpFile = resolved_file.c_str();
     exec_info.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
     exec_info.nShow = SW_NORMAL;
 

@@ -109,6 +109,8 @@ By default it builds the full local release-prep set:
 - `bin/syncpss-linux-x86_64.sha256`
 - `bin/install`
 - `bin/install.sha256`
+- `bin/managed_paths.sh`
+- `bin/managed_paths.sh.sha256`
 - `bin/master_fingerprint.sha256`
 - `bin/syncpss-wsl-installer.exe`
 - `bin/syncpss-wsl-installer.exe.sha256`
@@ -202,6 +204,7 @@ Detached signatures are generated for the main downloadable assets:
 - `install.asc`
 - `syncpss-wsl-installer.exe.asc`
 - `installer.sh.asc`
+- `managed_paths.sh.asc`
 - `uninstall_syncpss.sh.asc`
 - `master_fingerprint.sha256.asc`
 - `syncpss-release-binaries.zip.asc`

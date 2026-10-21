@@ -139,11 +139,37 @@ The `.sha256` files remain intentional. They are still used by the installer and
 curl -fsSL https://raw.githubusercontent.com/KffeePt/syncpss/main/install.sh | bash
 ```
 
-The bootstrap pulls the selected published `installer.sh` release asset, verifies it, stages it into your home directory, and runs it. By default it uses the latest production release. To pin a specific release:
+The bootstrap downloads `installer.sh`, `managed_paths.sh`, and `uninstall_syncpss.sh`
+from one published release and verifies their checksums and detached signatures.
+It runs the complete wizard from a private temporary directory, restores terminal
+input for prompts when piped from curl, and removes temporary files on exit.
+It requires `curl` and `gpg` (`gnupg`). By default it uses the latest production
+release. To pin a specific release, set the variable on the receiving Bash process:
 
 ```sh
-SYNCPSS_RELEASE_TAG=vX.Y.Z curl -fsSL https://raw.githubusercontent.com/KffeePt/syncpss/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/KffeePt/syncpss/main/install.sh | SYNCPSS_RELEASE_TAG=vX.Y.Z bash
 ```
+
+These bootstrap changes require a release containing the signed companion assets;
+older releases without those signatures are rejected.
+
+### CLI and automation
+
+```sh
+syncpss --help
+syncpss --version
+syncpss doctor --json
+syncpss setup
+```
+
+No arguments opens the TUI in a terminal. Help, version and installation diagnostics
+work without a terminal; unknown commands fail with a usage error. `setup` opens
+the installed interactive setup/repair wizard. Machine diagnostics report only
+dependency availability, configuration presence and version, without vault contents.
+
+The [Rust migration plan](docs/internals/RUST-MIGRATION-PLAN.md) defines the future
+shared CLI/TUI/AI command registry, Rust setup engine, MCP interface and Hermes
+credential-use integration. Those Rust features are planned, not shipped yet.
 
 ### Windows to WSL
 

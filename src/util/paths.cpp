@@ -199,13 +199,7 @@ std::filesystem::path create_secure_temp_directory(const std::string& prefix) {
         throw std::runtime_error("Failed to create secure temporary directory");
     }
 
-    std::error_code ignored;
-    std::filesystem::permissions(
-        created,
-        std::filesystem::perms::owner_all,
-        std::filesystem::perm_options::replace,
-        ignored
-    );
+    require_owner_only_permissions(created);
     return std::filesystem::path(created);
 }
 
@@ -340,6 +334,54 @@ bool is_managed_temp_path(const std::filesystem::path& path) {
     return path_is_within_root(path, std::filesystem::temp_directory_path());
 }
 
+void require_owner_only_permissions(const std::filesystem::path& path) {
+    if (path.empty()) {
+        throw std::runtime_error("Cannot secure an empty path");
+    }
+    std::error_code status_error;
+    const std::filesystem::file_status status = std::filesystem::symlink_status(path, status_error);
+    if (status_error || !std::filesystem::exists(status)) {
+        throw std::runtime_error(
+            "Cannot inspect path permissions for " + path.string() +
+            (status_error ? ": " + status_error.message() : ": path does not exist")
+        );
+    }
+    if (std::filesystem::is_symlink(status)) {
+        throw std::runtime_error("Refusing to change permissions through symlink: " + path.string());
+    }
+    std::error_code type_error;
+    const bool is_directory = std::filesystem::is_directory(path, type_error);
+    if (type_error) {
+        throw std::runtime_error("Cannot inspect path permissions for " + path.string() + ": " + type_error.message());
+    }
+
+    std::error_code status_follow_error;
+    const std::filesystem::file_status followed_status = std::filesystem::status(path, status_follow_error);
+    if (status_follow_error) {
+        throw std::runtime_error(
+            "Cannot inspect path permissions for " + path.string() + ": " + status_follow_error.message()
+        );
+    }
+    const bool was_executable =
+        (followed_status.permissions() & std::filesystem::perms::owner_exec) != std::filesystem::perms::none;
+    const std::filesystem::perms file_permissions =
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+        (was_executable ? std::filesystem::perms::owner_exec : std::filesystem::perms::none);
+
+    std::error_code permission_error;
+    std::filesystem::permissions(
+        path,
+        is_directory
+            ? std::filesystem::perms::owner_all
+            : file_permissions,
+        std::filesystem::perm_options::replace,
+        permission_error
+    );
+    if (permission_error) {
+        throw std::runtime_error("Cannot restrict permissions for " + path.string() + ": " + permission_error.message());
+    }
+}
+
 void require_managed_path(const std::filesystem::path& path, const std::string& action) {
     if (path.empty()) {
         throw std::runtime_error(action + " path is empty");
@@ -380,11 +422,26 @@ void require_temporary_path(const std::filesystem::path& path, const std::string
 }
 
 bool is_safe_recursive_delete_target(const std::filesystem::path& path) {
-    const std::string rendered = path.lexically_normal().string();
-    if (rendered.size() <= 10U) {
+    if (path.empty() || path_is_root_like(path) || path_is_windows_mounted(path)) {
         return false;
     }
-    return rendered.rfind("/home/", 0) == 0 || rendered.rfind("/Users/", 0) == 0;
+    if (std::filesystem::is_symlink(path)) {
+        return false;
+    }
+
+    const bool is_store_path = path_is_within_root(path, default_store_path());
+    const bool is_runtime_path = path_is_within_root(path, runtime_directory());
+    if (!is_store_path && !is_runtime_path) {
+        return false;
+    }
+
+    std::error_code error;
+    const std::filesystem::path canonical_parent =
+        std::filesystem::weakly_canonical(path.parent_path(), error);
+    if (error) {
+        return false;
+    }
+    return path_is_within_root(canonical_parent, get_real_home());
 }
 
 bool is_root_user() {

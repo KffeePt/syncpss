@@ -10,6 +10,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -21,16 +22,24 @@ inline constexpr wchar_t kRepoOwner[] = L"KffeePt";
 inline constexpr wchar_t kRepoName[] = L"syncpss";
 inline constexpr wchar_t kHelperScript[] = L"installer.sh";
 inline constexpr wchar_t kHelperScriptChecksum[] = L"installer.sh.sha256";
+inline constexpr wchar_t kHelperScriptSignature[] = L"installer.sh.asc";
+inline constexpr wchar_t kReleaseSigningKey[] = L"release-signing-key.asc";
 inline constexpr wchar_t kManagedPathsScript[] = L"managed_paths.sh";
 inline constexpr wchar_t kManagedPathsScriptChecksum[] = L"managed_paths.sh.sha256";
+inline constexpr wchar_t kManagedPathsScriptSignature[] = L"managed_paths.sh.asc";
 inline constexpr wchar_t kMaintainerHelperScript[] = L"maintainer_id.sh";
 inline constexpr wchar_t kInstallBinary[] = L"install";
 inline constexpr wchar_t kInstallChecksum[] = L"install.sha256";
+inline constexpr wchar_t kInstallSignature[] = L"install.asc";
 inline constexpr wchar_t kSyncpssBinary[] = L"syncpss-linux-x86_64";
 inline constexpr wchar_t kSyncpssChecksum[] = L"syncpss-linux-x86_64.sha256";
+inline constexpr wchar_t kSyncpssSignature[] = L"syncpss-linux-x86_64.asc";
 inline constexpr wchar_t kManifestAsset[] = L"manifest.xml";
 inline constexpr wchar_t kManifestChecksum[] = L"manifest.xml.sha256";
+inline constexpr wchar_t kManifestSignature[] = L"manifest.xml.asc";
 inline constexpr wchar_t kMasterFingerprint[] = L"master_fingerprint.sha256";
+inline constexpr wchar_t kMasterFingerprintSignature[] = L"master_fingerprint.sha256.asc";
+inline constexpr wchar_t kUninstallSignature[] = L"uninstall_syncpss.sh.asc";
 inline constexpr wchar_t kShortcutName[] = L"syncpss.lnk";
 inline constexpr wchar_t kWindowsAppDirName[] = L"syncpss";
 inline constexpr wchar_t kWindowsRuntimeDirName[] = L".syncpss";
@@ -45,6 +54,22 @@ inline constexpr wchar_t kPurgePowerShellScriptName[] = L"purge.ps1";
 inline constexpr wchar_t kWslRuntimeDirName[] = L".syncpss";
 inline constexpr wchar_t kWslHelpersDirName[] = L"helpers";
 inline constexpr wchar_t kWslConfigDirName[] = L"config";
+
+inline constexpr char kReleaseSigningPublicKey[] = R"KEY(-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEadnR5xYJKwYBBAHaRw8BAQdAfrq0eZ24KOJBnNvpiq1BCUdSFXAtB/54chwY
+C4/bsvS0D0tvZmZlZSBQb3QgTWFpboi1BBMWCgBdFiEEiZdCEdU+X/6z+nR0WiH9
+cznMIw0FAmnZ0ecbFIAAAAAABAAObWFudTIsMi41KzEuMTIsMiwxAhsDBQkFpFS5
+BQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEFoh/XM5zCMNm6YBAOKgk1Gn
+2bT5xNUMuAUGBV8ONiVA2kmgw4X9VClCOS63APwMG683OkVeO1kJkfF1C20Bi1mm
+mjCQ1NMe5AmmjpoTBbg4BGnZ0ecSCisGAQQBl1UBBQEBB0B670QnggtMmfwAy+Le
+i6JP8nQtfFg0QSlsUKxOBoEIQwMBCAeImgQYFgoAQhYhBImXQhHVPl/+s/p0dFoh
+/XM5zCMNBQJp2dHnGxSAAAAAAAQADm1hbnUyLDIuNSsxLjEyLDIsMQIbDAUJBaRU
+uQAKCRBaIf1zOcwjDbKZAP9vDYVWR9l99fSOGb/akwRqQ4meYawl4dtQRYxkbKco
+CQD/TC0/8yGytWiFv6PmMfj58vS0RYjhrHCpq/GNpXhv2AM=
+=VhQF
+-----END PGP PUBLIC KEY BLOCK-----
+)KEY";
 
 inline constexpr const char* kReset = "\033[0m";
 inline constexpr const char* kRed = "\033[31m";
@@ -104,6 +129,7 @@ void launch_process_new_console(const std::vector<std::wstring>& argv);
 std::string last_error_message(DWORD error);
 
 bool host_command_available(const std::wstring& command);
+std::wstring resolve_host_command_path(const std::wstring& command);
 bool host_package_manager_available();
 void ensure_host_prerequisites();
 bool is_running_as_admin();

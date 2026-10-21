@@ -32,23 +32,11 @@ std::filesystem::path notes_directory_path() {
 }
 
 void secure_runtime_file(const std::filesystem::path& path) {
-    std::error_code ignored;
-    std::filesystem::permissions(
-        path,
-        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-        std::filesystem::perm_options::replace,
-        ignored
-    );
+    syncpss::util::require_owner_only_permissions(path);
 }
 
 void secure_runtime_directory(const std::filesystem::path& path) {
-    std::error_code ignored;
-    std::filesystem::permissions(
-        path,
-        std::filesystem::perms::owner_all,
-        std::filesystem::perm_options::replace,
-        ignored
-    );
+    syncpss::util::require_owner_only_permissions(path);
 }
 
 json load_legacy_notes_db() {
@@ -93,22 +81,17 @@ void repair_gnupg_permissions_for_real_user() {
     if (syncpss::util::is_root_user()) {
         const std::string owner =
             syncpss::util::get_real_username() + ":" + syncpss::util::get_real_groupname();
-        (void)syncpss::util::run({"chown", "-R", owner, gnupg_dir.string()});
+        const syncpss::util::ProcessResult result =
+            syncpss::util::run({"chown", "-R", owner, gnupg_dir.string()});
+        if (result.exit_code != 0) {
+            throw std::runtime_error("Failed to repair GPG ownership: " + result.stderr_output);
+        }
     }
 
-    std::error_code ignored;
-    std::filesystem::permissions(
-        gnupg_dir,
-        std::filesystem::perms::owner_all,
-        std::filesystem::perm_options::replace,
-        ignored
-    );
+    syncpss::util::require_owner_only_permissions(gnupg_dir);
 
     for (const auto& entry : std::filesystem::recursive_directory_iterator(gnupg_dir)) {
-        const auto perms = entry.is_directory()
-            ? std::filesystem::perms::owner_all
-            : (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
-        std::filesystem::permissions(entry.path(), perms, std::filesystem::perm_options::replace, ignored);
+        syncpss::util::require_owner_only_permissions(entry.path());
     }
 }
 

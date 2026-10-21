@@ -15,6 +15,7 @@
 #include "util/config.hpp"
 #include "util/paths.hpp"
 #include "util/process.hpp"
+#include "util/release_verification.hpp"
 #include "util/runtime_config.hpp"
 #include "util/validation.hpp"
 
@@ -41,17 +42,24 @@ constexpr const char* kRepoOwner = "KffeePt";
 constexpr const char* kRepoName = "syncpss";
 constexpr const char* kInstallAsset = "install";
 constexpr const char* kInstallAssetSha = "install.sha256";
+constexpr const char* kInstallAssetSignature = "install.asc";
 constexpr const char* kSyncpssAsset = "syncpss-linux-x86_64";
 constexpr const char* kSyncpssAssetSha = "syncpss-linux-x86_64.sha256";
+constexpr const char* kSyncpssAssetSignature = "syncpss-linux-x86_64.asc";
 constexpr const char* kManifestAsset = "manifest.xml";
 constexpr const char* kManifestAssetSha = "manifest.xml.sha256";
+constexpr const char* kManifestAssetSignature = "manifest.xml.asc";
 constexpr const char* kInstallerScriptAsset = "installer.sh";
 constexpr const char* kInstallerScriptAssetSha = "installer.sh.sha256";
+constexpr const char* kInstallerScriptAssetSignature = "installer.sh.asc";
 constexpr const char* kManagedPathsScriptAsset = "managed_paths.sh";
 constexpr const char* kManagedPathsScriptAssetSha = "managed_paths.sh.sha256";
+constexpr const char* kManagedPathsScriptAssetSignature = "managed_paths.sh.asc";
 constexpr const char* kUninstallScriptAsset = "uninstall_syncpss.sh";
 constexpr const char* kUninstallScriptAssetSha = "uninstall_syncpss.sh.sha256";
+constexpr const char* kUninstallScriptAssetSignature = "uninstall_syncpss.sh.asc";
 constexpr const char* kMasterFingerprintAsset = "master_fingerprint.sha256";
+constexpr const char* kMasterFingerprintAssetSignature = "master_fingerprint.sha256.asc";
 
 struct VerificationAssets {
     std::filesystem::path install_binary;
@@ -269,7 +277,8 @@ std::filesystem::path resolve_or_download_asset(
     const std::filesystem::path& temp_dir,
     const std::filesystem::path& local_dir,
     const std::string& asset_name,
-    const std::string& checksum_name
+    const std::string& checksum_name,
+    const std::string& signature_name = {}
 ) {
     const std::filesystem::path local_binary = local_dir / asset_name;
     const std::filesystem::path local_checksum = local_dir / checksum_name;
@@ -285,13 +294,23 @@ std::filesystem::path resolve_or_download_asset(
     require_ok({"curl", "-fsSL", release_url(asset_name), "-o", downloaded_binary.string()}, "Download " + asset_name);
     require_ok({"curl", "-fsSL", release_url(checksum_name), "-o", downloaded_checksum.string()}, "Download " + checksum_name);
     verify_checksum(downloaded_binary, downloaded_checksum);
+    if (!signature_name.empty()) {
+        const std::filesystem::path downloaded_signature = temp_dir / signature_name;
+        syncpss::util::require_temporary_path(downloaded_signature, "downloaded signature");
+        require_ok(
+            {"curl", "-fsSL", release_url(signature_name), "-o", downloaded_signature.string()},
+            "Download " + signature_name
+        );
+        syncpss::util::verify_detached_release_signature(downloaded_binary, downloaded_signature);
+    }
     return downloaded_binary;
 }
 
 std::filesystem::path resolve_or_download_plain_asset(
     const std::filesystem::path& temp_dir,
     const std::filesystem::path& local_dir,
-    const std::string& asset_name
+    const std::string& asset_name,
+    const std::string& signature_name = {}
 ) {
     const std::filesystem::path local_asset = local_dir / asset_name;
     if (std::filesystem::exists(local_asset)) {
@@ -301,6 +320,15 @@ std::filesystem::path resolve_or_download_plain_asset(
     const std::filesystem::path downloaded_asset = temp_dir / asset_name;
     syncpss::util::require_temporary_path(downloaded_asset, "downloaded asset");
     require_ok({"curl", "-fsSL", release_url(asset_name), "-o", downloaded_asset.string()}, "Download " + asset_name);
+    if (!signature_name.empty()) {
+        const std::filesystem::path downloaded_signature = temp_dir / signature_name;
+        syncpss::util::require_temporary_path(downloaded_signature, "downloaded signature");
+        require_ok(
+            {"curl", "-fsSL", release_url(signature_name), "-o", downloaded_signature.string()},
+            "Download " + signature_name
+        );
+        syncpss::util::verify_detached_release_signature(downloaded_asset, downloaded_signature);
+    }
     return downloaded_asset;
 }
 
@@ -336,11 +364,17 @@ VerificationAssets resolve_verification_assets(
     const std::filesystem::path& local_dir
 ) {
     return VerificationAssets{
-        resolve_or_download_asset(temp_dir, local_dir, kInstallAsset, kInstallAssetSha),
-        resolve_or_download_asset(temp_dir, local_dir, kInstallerScriptAsset, kInstallerScriptAssetSha),
-        resolve_or_download_asset(temp_dir, local_dir, kManagedPathsScriptAsset, kManagedPathsScriptAssetSha),
-        resolve_or_download_asset(temp_dir, local_dir, kUninstallScriptAsset, kUninstallScriptAssetSha),
-        resolve_or_download_plain_asset(temp_dir, local_dir, kMasterFingerprintAsset)
+        resolve_or_download_asset(temp_dir, local_dir, kInstallAsset, kInstallAssetSha, kInstallAssetSignature),
+        resolve_or_download_asset(
+            temp_dir, local_dir, kInstallerScriptAsset, kInstallerScriptAssetSha, kInstallerScriptAssetSignature
+        ),
+        resolve_or_download_asset(
+            temp_dir, local_dir, kManagedPathsScriptAsset, kManagedPathsScriptAssetSha, kManagedPathsScriptAssetSignature
+        ),
+        resolve_or_download_asset(
+            temp_dir, local_dir, kUninstallScriptAsset, kUninstallScriptAssetSha, kUninstallScriptAssetSignature
+        ),
+        resolve_or_download_plain_asset(temp_dir, local_dir, kMasterFingerprintAsset, kMasterFingerprintAssetSignature)
     };
 }
 
@@ -451,24 +485,13 @@ void chown_recursive_to_real_user(const std::filesystem::path& path) {
         throw std::runtime_error("Cannot resolve passwd entry for real user: " + username);
     }
 
-    std::error_code ignored;
-    std::filesystem::permissions(
-        path,
-        std::filesystem::perms::owner_all,
-        std::filesystem::perm_options::add,
-        ignored
-    );
+    syncpss::util::require_owner_only_permissions(path);
     if (::chown(path.c_str(), pw->pw_uid, pw->pw_gid) != 0) {
         throw std::runtime_error("Failed to chown path to real user: " + path.string());
     }
 
     for (const auto& entry : std::filesystem::recursive_directory_iterator(path)) {
-        std::filesystem::permissions(
-            entry.path(),
-            std::filesystem::perms::owner_all,
-            std::filesystem::perm_options::add,
-            ignored
-        );
+        syncpss::util::require_owner_only_permissions(entry.path());
         if (::chown(entry.path().c_str(), pw->pw_uid, pw->pw_gid) != 0) {
             throw std::runtime_error("Failed to chown path to real user: " + entry.path().string());
         }
@@ -547,9 +570,13 @@ int main(int argc, char** argv) {
 
         const std::filesystem::path asset_dir = executable_dir(argv);
         const std::filesystem::path syncpss_binary =
-            resolve_or_download_asset(temp_dir, asset_dir, kSyncpssAsset, kSyncpssAssetSha);
+            resolve_or_download_asset(
+                temp_dir, asset_dir, kSyncpssAsset, kSyncpssAssetSha, kSyncpssAssetSignature
+            );
         const std::filesystem::path manifest_xml =
-            resolve_or_download_asset(temp_dir, asset_dir, kManifestAsset, kManifestAssetSha);
+            resolve_or_download_asset(
+                temp_dir, asset_dir, kManifestAsset, kManifestAssetSha, kManifestAssetSignature
+            );
         const VerificationAssets verification_assets = resolve_verification_assets(temp_dir, asset_dir);
         verify_master_fingerprint(temp_dir, verification_assets, syncpss_binary);
 

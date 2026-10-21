@@ -96,15 +96,7 @@ std::string first_token(const std::string& value) {
 }
 
 void secure_owner_only_path(const std::filesystem::path& path) {
-    std::error_code ignored;
-    std::filesystem::permissions(
-        path,
-        std::filesystem::is_directory(path)
-            ? std::filesystem::perms::owner_all
-            : (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write),
-        std::filesystem::perm_options::replace,
-        ignored
-    );
+    syncpss::util::require_owner_only_permissions(path);
 }
 
 std::string local_ip_address() {

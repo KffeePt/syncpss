@@ -10,6 +10,7 @@ inline constexpr const char* kRepoOwner = "KffeePt";
 inline constexpr const char* kRepoName = "syncpss";
 inline constexpr const char* kInstallerAsset = "installer.sh";
 inline constexpr const char* kInstallerChecksumAsset = "installer.sh.sha256";
+inline constexpr const char* kInstallerSignatureAsset = "installer.sh.asc";
 
 struct ReleaseVersionInfo {
     std::string local_version;

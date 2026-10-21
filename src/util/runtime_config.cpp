@@ -70,16 +70,7 @@ std::string render_path(const std::filesystem::path& path) {
 }
 
 void set_owner_only_permissions(const std::filesystem::path& path) {
-    const bool is_directory = std::filesystem::is_directory(path);
-    std::error_code error;
-    std::filesystem::permissions(
-        path,
-        is_directory
-            ? std::filesystem::perms::owner_all
-            : (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write),
-        std::filesystem::perm_options::replace,
-        error
-    );
+    syncpss::util::require_owner_only_permissions(path);
 }
 
 std::string repo_name_from_repo_id(const std::string& repo_id) {

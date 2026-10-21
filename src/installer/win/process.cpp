@@ -167,9 +167,10 @@ ProcessResult run_process(const std::vector<std::wstring>& argv) {
 
     std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back(L'\0');
+    const std::wstring application_path = resolve_host_command_path(argv.front());
 
     if (!CreateProcessW(
-            nullptr,
+            application_path.c_str(),
             mutable_command.data(),
             nullptr,
             nullptr,
@@ -227,9 +228,10 @@ int run_process_interactive(const std::vector<std::wstring>& argv) {
 
     std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back(L'\0');
+    const std::wstring application_path = resolve_host_command_path(argv.front());
 
     if (!CreateProcessW(
-            nullptr,
+            application_path.c_str(),
             mutable_command.data(),
             nullptr,
             nullptr,
@@ -269,9 +271,10 @@ void launch_process_new_console(const std::vector<std::wstring>& argv) {
 
     std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back(L'\0');
+    const std::wstring application_path = resolve_host_command_path(argv.front());
 
     if (!CreateProcessW(
-            nullptr,
+            application_path.c_str(),
             mutable_command.data(),
             nullptr,
             nullptr,

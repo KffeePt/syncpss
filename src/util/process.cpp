@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <stdexcept>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -82,6 +83,78 @@ void append_from_fd(int fd, std::string& target, bool& open_flag) {
         ::close(fd);
         open_flag = false;
     }
+}
+
+bool secure_executable_path(const std::filesystem::path& candidate) {
+    if (candidate.empty() || !candidate.is_absolute() || access(candidate.c_str(), X_OK) != 0) {
+        return false;
+    }
+
+    struct stat executable_stat{};
+    if (stat(candidate.c_str(), &executable_stat) != 0 || !S_ISREG(executable_stat.st_mode)) {
+        return false;
+    }
+    if (executable_stat.st_uid != geteuid() && executable_stat.st_uid != 0) {
+        return false;
+    }
+    if ((executable_stat.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        return false;
+    }
+
+    std::filesystem::path directory = candidate.parent_path();
+    while (!directory.empty()) {
+        struct stat directory_stat{};
+        if (stat(directory.c_str(), &directory_stat) != 0 || !S_ISDIR(directory_stat.st_mode)) {
+            return false;
+        }
+        if (directory_stat.st_uid != geteuid() && directory_stat.st_uid != 0) {
+            return false;
+        }
+        if ((directory_stat.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+            return false;
+        }
+        const std::filesystem::path parent = directory.parent_path();
+        if (parent == directory) {
+            break;
+        }
+        directory = parent;
+    }
+
+    return true;
+}
+
+std::optional<std::string> resolve_trusted_command(const std::string& executable) {
+    if (executable.empty()) {
+        return std::nullopt;
+    }
+
+    if (executable.find('/') != std::string::npos) {
+        const std::filesystem::path candidate = std::filesystem::absolute(executable).lexically_normal();
+        return secure_executable_path(candidate) ? std::optional<std::string>(candidate.string()) : std::nullopt;
+    }
+
+    const char* path_env = std::getenv("PATH");
+    if (path_env == nullptr) {
+        return std::nullopt;
+    }
+
+    std::stringstream path_stream(path_env);
+    std::string segment;
+    while (std::getline(path_stream, segment, ':')) {
+        if (segment.empty()) {
+            continue;
+        }
+        const std::filesystem::path directory(segment);
+        if (!directory.is_absolute()) {
+            continue;
+        }
+        const std::filesystem::path candidate = (directory / executable).lexically_normal();
+        if (secure_executable_path(candidate)) {
+            return candidate.string();
+        }
+    }
+
+    return std::nullopt;
 }
 
 void set_nonblocking(int fd) {
@@ -170,6 +243,13 @@ ProcessResult run(const std::vector<std::string>& argv, const ProcessOptions& op
         throw std::invalid_argument("Cannot execute an empty argv");
     }
 
+    const std::optional<std::string> executable = resolve_trusted_command(argv.front());
+    if (!executable.has_value()) {
+        throw std::runtime_error("Refusing to execute an untrusted or unavailable command: " + argv.front());
+    }
+    std::vector<std::string> trusted_argv = argv;
+    trusted_argv.front() = *executable;
+
     int stdout_pipe[2]{-1, -1};
     int stderr_pipe[2]{-1, -1};
     int stdin_pipe[2]{-1, -1};
@@ -183,7 +263,7 @@ ProcessResult run(const std::vector<std::string>& argv, const ProcessOptions& op
         throw_errno("Failed to create stdin pipe");
     }
 
-    std::vector<char*> exec_argv = build_argv(argv);
+    std::vector<char*> exec_argv = build_argv(trusted_argv);
 
     const pid_t pid = fork();
     if (pid < 0) {
@@ -214,7 +294,7 @@ ProcessResult run(const std::vector<std::string>& argv, const ProcessOptions& op
             ::close(stdin_pipe[1]);
         }
 
-        execvp(exec_argv[0], exec_argv.data());
+        execv(exec_argv[0], exec_argv.data());
         _exit(127);
     }
 
@@ -239,7 +319,14 @@ int run_passthrough(const std::vector<std::string>& argv, const ProcessOptions& 
         throw std::invalid_argument("Cannot execute an empty argv");
     }
 
-    std::vector<char*> exec_argv = build_argv(argv);
+    const std::optional<std::string> executable = resolve_trusted_command(argv.front());
+    if (!executable.has_value()) {
+        throw std::runtime_error("Refusing to execute an untrusted or unavailable command: " + argv.front());
+    }
+    std::vector<std::string> trusted_argv = argv;
+    trusted_argv.front() = *executable;
+
+    std::vector<char*> exec_argv = build_argv(trusted_argv);
 
     const pid_t pid = fork();
     if (pid < 0) {
@@ -251,7 +338,7 @@ int run_passthrough(const std::vector<std::string>& argv, const ProcessOptions& 
             _exit(127);
         }
         apply_environment_overrides(options.env);
-        execvp(exec_argv[0], exec_argv.data());
+        execv(exec_argv[0], exec_argv.data());
         _exit(127);
     }
 
@@ -272,32 +359,7 @@ int run_passthrough(const std::vector<std::string>& argv, const ProcessOptions& 
 }
 
 bool is_command_available(const std::string& executable) {
-    if (executable.empty()) {
-        return false;
-    }
-
-    if (executable.find('/') != std::string::npos) {
-        return access(executable.c_str(), X_OK) == 0;
-    }
-
-    const char* path_env = std::getenv("PATH");
-    if (path_env == nullptr) {
-        return false;
-    }
-
-    std::stringstream path_stream(path_env);
-    std::string segment;
-    while (std::getline(path_stream, segment, ':')) {
-        if (segment.empty()) {
-            continue;
-        }
-        const std::filesystem::path candidate = std::filesystem::path(segment) / executable;
-        if (access(candidate.c_str(), X_OK) == 0) {
-            return true;
-        }
-    }
-
-    return false;
+    return resolve_trusted_command(executable).has_value();
 }
 
 }  // namespace syncpss::util
