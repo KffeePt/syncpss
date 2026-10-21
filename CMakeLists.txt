@@ -112,6 +112,7 @@ install(TARGETS syncpss syncpss_install DESTINATION /usr/local/bin)
 
 enable_testing()
 if(UNIX)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(
         NAME validation_smoke
         COMMAND syncpss_validation_smoke
@@ -119,5 +120,10 @@ if(UNIX)
     add_test(
         NAME installer_qa
         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_qa/run.sh
+    )
+    add_test(
+        NAME bootstrap_cli_qa
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/bootstrap_cli_qa.py
+                --binary $<TARGET_FILE:syncpss>
     )
 endif()

@@ -66,7 +66,7 @@ RELEASE_SIGNING_FINGERPRINT="89974211D53E5FFEB3FA74745A21FD7339CC230D"
 RELEASE_SIGNING_PUBLIC_KEY='-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mDMEadnR5xYJKwYBBAHaRw8BAQdAfrq0eZ24KOJBnNvpiq1BCUdSFXAtB/54chwY
-C4/bsvS0tvZmZlZSBQb3QgTWFpboi1BBMWCgBdFiEEiZdCEdU+X/6z+nR0WiH9
+C4/bsvS0D0tvZmZlZSBQb3QgTWFpboi1BBMWCgBdFiEEiZdCEdU+X/6z+nR0WiH9
 cznMIw0FAmnZ0ecbFIAAAAAABAAObWFudTIsMi41KzEuMTIsMiwxAhsDBQkFpFS5
 BQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEFoh/XM5zCMNm6YBAOKgk1Gn
 2bT5xNUMuAUGBV8ONiVA2kmgw4X9VClCOS63APwMG683OkVeO1kJkfF1C20Bi1mm
@@ -3843,7 +3843,7 @@ restore_gpg_from_remote_keys() {
         raw_dir="$(find_gnupg_source_dir "${mount_point}" || true)"
         show_merge_preview "${mount_point}"
         mkdir -p "${HOME}/.gnupg"
-    chmod 700 "${HOME}/.gnupg"
+        chmod 700 "${HOME}/.gnupg"
         if [ -f "${mount_point}/pubkeys.asc" ]; then
             gpg --import "${mount_point}/pubkeys.asc"
         fi

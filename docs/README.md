@@ -17,6 +17,7 @@ The main trust boundary is:
 - [Installer Style And Flow](internals/INSTALLER-STYLE-AND-FLOW.md)
 - [Build And Release](internals/BUILD-AND-RELEASE.md)
 - [Runtime Config And Store](internals/RUNTIME-CONFIG-AND-STORE.md)
+- [Rust migration, CLI registry and Hermes integration plan](internals/RUST-MIGRATION-PLAN.md)
 
 ## Quick map
 

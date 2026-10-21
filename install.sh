@@ -3,7 +3,6 @@ set -euo pipefail
 
 REPO="KffeePt/syncpss"
 GITHUB_API_URL="https://api.github.com/repos/${REPO}"
-TARGET="${HOME}/installer.sh"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -20,7 +19,7 @@ RELEASE_SIGNING_FINGERPRINT="89974211D53E5FFEB3FA74745A21FD7339CC230D"
 RELEASE_SIGNING_PUBLIC_KEY='-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mDMEadnR5xYJKwYBBAHaRw8BAQdAfrq0eZ24KOJBnNvpiq1BCUdSFXAtB/54chwY
-C4/bsvS0tvZmZlZSBQb3QgTWFpboi1BBMWCgBdFiEEiZdCEdU+X/6z+nR0WiH9
+C4/bsvS0D0tvZmZlZSBQb3QgTWFpboi1BBMWCgBdFiEEiZdCEdU+X/6z+nR0WiH9
 cznMIw0FAmnZ0ecbFIAAAAAABAAObWFudTIsMi41KzEuMTIsMiwxAhsDBQkFpFS5
 BQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEFoh/XM5zCMNm6YBAOKgk1Gn
 2bT5xNUMuAUGBV8ONiVA2kmgw4X9VClCOS63APwMG683OkVeO1kJkfF1C20Bi1mm
@@ -113,19 +112,43 @@ sha256_for_file() {
     fail "Need sha256sum or shasum to verify installer.sh"
 }
 
-RELEASE_TAG="$(resolve_release_tag)"
-printf 'Downloading syncpss installer release %s...\n' "${RELEASE_TAG}"
-download "installer.sh" "${TMP_DIR}/installer.sh" "${RELEASE_TAG}"
-download "installer.sh.sha256" "${TMP_DIR}/installer.sh.sha256" "${RELEASE_TAG}"
-download "installer.sh.asc" "${TMP_DIR}/installer.sh.asc" "${RELEASE_TAG}"
+bootstrap_main() {
+    local release_tag asset expected_checksum actual_checksum
+    case "${1:-}" in
+        -h|--help)
+            printf 'Usage: bash install.sh [installer options]\n'
+            printf 'Downloads and verifies the complete setup wizard from one release.\n'
+            printf 'Set SYNCPSS_RELEASE_TAG=vX.Y.Z to pin a release.\n'
+            return 0
+            ;;
+    esac
+    command -v curl >/dev/null 2>&1 || fail "curl is required; install it and retry"
+    command -v gpg >/dev/null 2>&1 || fail "gpg is required; install gnupg and retry"
+    release_tag="$(resolve_release_tag)"
+    [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Invalid release tag; use vX.Y.Z"
+    printf 'Downloading syncpss installer release %s...\n' "${release_tag}"
+    for asset in installer.sh managed_paths.sh uninstall_syncpss.sh; do
+        download "${asset}" "${TMP_DIR}/${asset}" "${release_tag}"
+        download "${asset}.sha256" "${TMP_DIR}/${asset}.sha256" "${release_tag}"
+        download "${asset}.asc" "${TMP_DIR}/${asset}.asc" "${release_tag}"
+        expected_checksum="$(read_checksum "${TMP_DIR}/${asset}.sha256")"
+        actual_checksum="$(sha256_for_file "${TMP_DIR}/${asset}")"
+        [[ "${expected_checksum}" =~ ^[[:xdigit:]]{64}$ ]] || fail "Invalid checksum for ${asset}"
+        [ "${expected_checksum}" = "${actual_checksum}" ] || fail "Checksum mismatch for ${asset}"
+        verify_release_signature "${TMP_DIR}/${asset}" "${TMP_DIR}/${asset}.asc"
+        chmod 700 "${TMP_DIR}/${asset}"
+    done
 
-expected_checksum="$(read_checksum "${TMP_DIR}/installer.sh.sha256")"
-actual_checksum="$(sha256_for_file "${TMP_DIR}/installer.sh")"
-[ -n "${expected_checksum}" ] || fail "installer.sh.sha256 did not contain a checksum"
-[ "${expected_checksum}" = "${actual_checksum}" ] || \
-    fail "installer.sh checksum mismatch. Expected ${expected_checksum}, got ${actual_checksum}"
-verify_release_signature "${TMP_DIR}/installer.sh" "${TMP_DIR}/installer.sh.asc"
+    printf 'Verified complete installer; starting setup.\n'
+    # Keep all companions together until setup exits. Restore terminal input for
+    # curl | bash so wizard prompts cannot consume the bootstrap pipe.
+    if [ ! -t 0 ] && [ -t 1 ] && [ -r /dev/tty ]; then
+        SYNCPSS_RELEASE_TAG="${release_tag}" bash "${TMP_DIR}/installer.sh" "$@" </dev/tty
+    else
+        SYNCPSS_RELEASE_TAG="${release_tag}" bash "${TMP_DIR}/installer.sh" "$@"
+    fi
+}
 
-install -m 700 "${TMP_DIR}/installer.sh" "${TARGET}"
-printf 'Verified and staged installer to %s\n' "${TARGET}"
-exec bash "${TARGET}"
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+    bootstrap_main "$@"
+fi

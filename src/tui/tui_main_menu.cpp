@@ -83,7 +83,7 @@ void TuiApp::show_startup_splash() {
             release_result_consumed = true;
             if (can_offer_update && latest_release_update_available) {
                 prompt_active = true;
-                prompt_deadline = clock::now() + std::chrono::seconds(30);
+                prompt_deadline = splash_deadline;
             }
         }
 
@@ -116,7 +116,7 @@ void TuiApp::show_startup_splash() {
                 loading_phase,
                 "Loading updater",
                 detail,
-                seconds_remaining / 30.0,
+                seconds_remaining / 3.0,
                 prompt
             );
             present_screen();

@@ -96,6 +96,7 @@ def main() -> int:
 
         if not args.lint_only and not args.static_only and not args.skip_installer_qa:
             runner.run_step("Installer QA harness", lambda: run_installer_qa(runner, bash))
+            runner.run_step("Bootstrap and CLI QA", lambda: run_bootstrap_cli_qa(runner, bash))
     except CheckFailure:
         runner.print_summary()
         cleanup_build_dir(keep=args.keep_build_dir)
@@ -517,6 +518,15 @@ def run_installer_qa(runner: TestRunner, bash: str) -> str:
         cwd=REPO_ROOT,
     )
     return "tests/installer_qa/run.sh"
+
+
+def run_bootstrap_cli_qa(runner: TestRunner, bash: str) -> str:
+    runner.run_command(
+        "bootstrap and CLI QA",
+        [bash, "-lc", "python3 tests/bootstrap_cli_qa.py --binary build-test-runner/syncpss"],
+        cwd=REPO_ROOT,
+    )
+    return "offline real-GPG bootstrap and noninteractive CLI regressions"
 
 
 def iter_files(base_dir: Path, suffix: str) -> list[Path]:
