@@ -1,8 +1,34 @@
 # syncpss Rust migration and agent interface
 
-Date: 2026-10-20. Status: implementation plan; the production runtime is still
+Date: 2026-10-21. Status: implementation plan; the production runtime is still
 C++17. The immediate maintenance delivery repairs and reinstalls that runtime.
 Nothing below labels an unimplemented Rust command as available.
+
+## Implementation handoff
+
+This plan is the durable handoff for the future Rust migration. Begin coding
+only when the user explicitly directs implementation. On that instruction,
+recheck the repository and remote state, then start with Milestone 1 and ticket
+1 below; do not infer approval to publish a release, change installation paths,
+or cut over the installed runtime from a request to begin implementation.
+
+Current starting point: the C++17 repair is on branch
+`codex/rust-migration-install-repair`, commit `8390e7e`, in draft PR
+`https://github.com/KffeePt/syncpss/pull/1`. The user's Kali WSL installation
+was updated and its exact rollback mapping, binary digest, preserved-config
+checks and startup smoke result are recorded in `out/installed-repair-receipt.md`.
+The PR's Linux and Windows CI passed when this handoff was recorded. These are
+historical facts; check current branch, PR, CI and installation state again at
+implementation time.
+
+The first implementation slice is a parallel `rust/` workspace and a
+development-only `syncpss-next` binary with `doctor`, `commands list/schema`,
+and side-effect-free `setup plan`. Keep the C++ runtime and its build/release
+checks active. Before editing, inventory current command behavior and map each
+handler to a registry descriptor, authority policy, schema and acceptance
+evidence. The detailed compatibility contract, security boundaries, Hermes
+design, installer state machine, milestones and acceptance gates below govern
+subsequent work.
 
 ## Outcome and compatibility contract
 
